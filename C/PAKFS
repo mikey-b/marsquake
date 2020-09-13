@@ -1,0 +1,233 @@
+/* C FILE */
+
+#include "mqhead.h"
+#include "pakfs.h"
+#include "debug.h"
+
+static char tmpnames[1024];
+
+static PAKFILE pakdir[32];
+
+PFILE pfiledata;
+
+char packfname[32];
+
+static FILE *pakfp;
+
+static BOOL packpresent;
+
+static int packfiles;
+
+void init_pakfs(char *fname)
+{
+  int files, f, c, o;
+  char datum;
+
+  pfiledata.used = FALSE;
+
+  packpresent = FALSE;
+
+  strcpy(packfname, fname);
+
+  pakfp = fopen(packfname,"rb");
+
+  if (pakfp == NULL) {
+#ifndef NO_LOGFILE
+    logfile("Can't open pack file '%s'\n",packfname);
+#endif
+    return;
+  }
+
+  packfiles = files = getw(pakfp);
+
+#ifndef NO_LOGFILE
+  logfile("%d files found\n",packfiles);
+#endif
+
+  /* Read directory */
+  o = 0;
+  for (f=0; f<files; f++) {
+    pakdir[f].name = &tmpnames[o];
+
+    c = 0;
+    do {
+      datum = fgetc(pakfp)^(c+60);
+
+      tmpnames[o] = datum;
+
+      c++;
+      o++;
+    } while (datum);
+
+    pakdir[f].offset = getw(pakfp);
+    pakdir[f].len = getw(pakfp);
+
+#ifndef NO_LOGFILE
+    logfile("File %d : '%s', %d bytes from offset %d\n",f,pakdir[f].name,pakdir[f].len,pakdir[f].offset);
+#endif
+  }
+
+  packpresent = TRUE;
+}
+
+void shutdown_pakfs(void)
+{
+  if (packpresent) fclose(pakfp);
+}
+
+BOOL cmpnames(char *n1, char *n2)
+{
+  char c1, c2;
+
+  do {
+    c1 = *n1;
+    c2 = *n2;
+
+    if (c1>='A' && c1<='Z') c1 = 'a' + (c1 - 'A');
+    if (c2>='A' && c2<='Z') c2 = 'a' + (c2 - 'A');
+
+    n1++;
+    n2++;
+  } while (c1==c2 && c1!=0);
+
+  return (c1==c2);
+}
+
+PFILE *alloc_pfile(void)
+{
+  if (pfiledata.used) return NULL;
+  else return &pfiledata;
+}
+
+PFILE *pak_fopen(char *fname, char *com)
+{
+  int f;
+  PFILE *p;
+
+#ifndef NO_LOGFILE
+  logfile("Attempting to open file '%s'\n",fname);
+#endif
+
+  if (packpresent) {
+    /* Search index for fname */
+    for (f=0; f<packfiles && !cmpnames(fname,pakdir[f].name); f++);
+
+    if (f<packfiles) {
+      /* Found packfile entry */
+      p = alloc_pfile();
+
+      if (p==NULL) {
+#ifndef NO_LOGFILE
+        logfile("Nested opening of files!\n");
+#endif
+        return NULL;
+      }
+
+      p->fileoffset = pakdir[f].offset;
+      p->fp = 0;
+      p->packed = TRUE;
+      p->used = TRUE;
+      p->len = pakdir[f].len;
+
+      pakfp = fopen(packfname,"rb");
+      fseek(pakfp, p->fileoffset, 0);
+
+#ifndef NO_LOGFILE
+      logfile("pak file '%s' opened\n",fname);
+#endif
+      return p;
+    }
+  }
+
+  /* Try to open normally */
+  p->norm_fp = fopen(fname,com);
+
+  if (p->norm_fp) {
+    p->packed = FALSE;
+    p->used = TRUE;
+
+#ifndef NO_LOGFILE
+    logfile("resorted to normal file '%s'\n",fname);
+#endif
+
+    return p;
+  }
+
+  fclose(pakfp);
+
+  return NULL;
+}
+
+char pak_fgetc(PFILE *p)
+{
+  char datum;
+
+  if (p->packed) {
+    datum = fgetc(pakfp)^p->fp;
+    p->fp++;
+
+    return datum;
+  }
+  else {
+    return fgetc(p->norm_fp);
+  }
+}
+
+int pak_getw(PFILE *p)
+{
+  int retval;
+
+  retval = pak_fgetc(p);
+  retval |= pak_fgetc(p)<<8;
+  retval |= pak_fgetc(p)<<16;
+  retval |= pak_fgetc(p)<<24;
+
+  return retval;
+}
+
+void pak_fclose(PFILE *p)
+{
+  if (!p->packed) {
+    fclose(p->norm_fp);
+  }
+  else {
+    fclose(pakfp);
+  }
+
+  p->used = FALSE;
+}
+
+void pak_fseek(PFILE *p, int pos, int off)
+{
+  if (p->packed) {
+    p->fp = pos;
+    fseek(pakfp,p->fileoffset+pos,0);
+  }
+  else {
+    fseek(p->norm_fp, pos, off);
+  }
+}
+
+int pak_ftell(PFILE *p)
+{
+  if (p->packed) {
+    return p->fp;
+  }
+  else {
+    return ftell(p->norm_fp);
+  }
+}
+
+BOOL pak_feof(PFILE *p)
+{
+  if (p->packed) {
+    if (p->fp < p->len) return FALSE;
+    else return TRUE;
+  }
+  else {
+    return feof(p->norm_fp);
+  }
+}
+
+
+

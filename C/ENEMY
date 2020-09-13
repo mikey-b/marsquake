@@ -1,0 +1,979 @@
+/* Marsquake : Moonquake II
+**
+** This module contains code relating to the creation/updating/removal of
+** enemy units.
+**
+** Movement types :
+**     1. Random
+**     2. Converging with players position
+**     3. Continual horizontal movement
+**     4. Continual vertical movement
+**     5. Follows left wall
+**
+** Characteristics :
+**     1. Ability to pass over bombs
+**     2. Contact with player is deadly
+**     3. Can be destroyed by bombs
+**     4. Ability to pass over blocking tiles
+*/
+
+#include "mqhead.h"
+
+int allocate_new_enemy(void)
+{
+  /* Allocates a new enemy unit */
+  int nme;
+
+  /* Find an empty enemy control block */
+  for (nme=0; nme<ENEMY_COUNT && (nme_unit[nme].status & EXISTS); nme++);
+
+  if (nme==ENEMY_COUNT) {
+    /* No empty blocks were found */
+    return -1;
+  }
+
+  /* Empty enemy block has been found */
+  nme_unit[nme].status = EXISTS;
+
+  return nme;
+}
+
+void create_new_enemy(int enemy_type, int xpos, int ypos)
+{
+  /* Create a new enemy unit, and initialise it's enemy control block */
+  int nme;
+  int bail_out;
+  floor_tile *tile;
+
+  tile = &floor_map[ypos][xpos];
+
+  /* First, we must check whether we can create a new enemy at the
+  ** given coordinates, ie. it's not blocked or being used by another
+  ** enemy/player/bomb...?
+  */
+  bail_out = 0;
+
+  /* Is tile blocked? This affects all enemies except ghosts */
+  if (enemy_type != NME_GHOST &&
+      enemy_type != NME_TARGETING_GHOST) {
+
+    if ((tile->status & 128)==0) {
+      /* Tile is blocked */
+      bail_out = 1;
+    }
+  }
+
+  /* Does tile contain enemy? */
+  if (tile->extra2 & EXISTS) {
+    /* yes - can't create enemy here! */
+#ifndef NO_PRINTF
+    printf("nmegen: Tile blocked\n");
+#endif
+    bail_out = 1;
+  }
+
+  /* If everything is ok, create our enemy unit */
+  if (!bail_out) {
+    nme = allocate_new_enemy();
+
+    if (nme>=0) {
+      /* Successfully created new enemy unit - set up details */
+      nme_unit[nme].x = xpos<<4;
+      nme_unit[nme].y = ypos<<4;
+      nme_unit[nme].type = enemy_type;
+      nme_unit[nme].anim_ctr = 0;
+
+      /* Link map to enemy */
+      tile->extra2 = 128 | 64 | nme;
+
+      switch (enemy_type) {
+        case NME_BOMB_EATER_RED :
+          nme_unit[nme].abilities = NME_BLOW_UPPABLE |
+          			    NME_CAN_PASS_BOMBS |
+          			    NME_CONTACT_DEADLY;
+          nme_unit[nme].movement  = NME_MOVE_RANDOM;
+	  break;
+
+        case NME_BOMB_EATER_GREEN :
+          nme_unit[nme].abilities = NME_BLOW_UPPABLE |
+          			    NME_CAN_PASS_BOMBS;
+          nme_unit[nme].movement  = NME_MOVE_RANDOM;
+	  break;
+
+        case NME_WANDERING_BOMB :
+          nme_unit[nme].abilities = NME_BLOW_UPPABLE |
+          			    NME_WALK_HALF_SPEED;
+          nme_unit[nme].movement  = NME_MOVE_RANDOM;
+          break;
+
+        case NME_TARGETING_BOMB :
+          nme_unit[nme].abilities = NME_BLOW_UPPABLE |
+          			    NME_WALK_HALF_SPEED;
+          nme_unit[nme].movement  = NME_MOVE_TARGET;
+          break;
+
+        case NME_COMBINING_MONSTER :
+          nme_unit[nme].abilities = NME_BLOW_UPPABLE |
+          			      NME_CONTACT_DEADLY;
+          nme_unit[nme].movement  = NME_MOVE_RANDOM;
+          nme_unit[nme].misc[0]   = 1;
+          break;
+
+        case NME_GHOST :
+          nme_unit[nme].abilities = NME_BLOW_UPPABLE |
+          			      NME_CONTACT_DEADLY |
+          			      NME_CAN_PASS_BOMBS |
+          			      NME_CAN_PASS_WALLS |
+          			      NME_WALK_HALF_SPEED;
+          nme_unit[nme].movement  = NME_MOVE_RANDOM;
+          nme_unit[nme].misc[0]   = nme;  /* offset delay */
+          break;
+
+        case NME_TARGETING_GHOST :
+          nme_unit[nme].abilities = NME_BLOW_UPPABLE |
+          			      NME_CONTACT_DEADLY |
+          			      NME_CAN_PASS_BOMBS |
+          			      NME_CAN_PASS_WALLS |
+          			      NME_WALK_HALF_SPEED;
+          nme_unit[nme].movement  = NME_MOVE_TARGET;
+          nme_unit[nme].misc[0]   = nme;  /* offset delay */
+          break;
+
+        case NME_SPRYT_H :
+          nme_unit[nme].abilities = NME_CAN_PASS_BOMBS |
+          			      NME_CONTACT_DEADLY;
+          nme_unit[nme].movement  = NME_MOVE_HORIZONTAL;
+          break;
+
+        case NME_SPRYT_V :
+          nme_unit[nme].abilities = NME_CAN_PASS_BOMBS |
+          			      NME_CONTACT_DEADLY;
+          nme_unit[nme].movement  = NME_MOVE_VERTICAL;
+          nme_unit[nme].status |= 2<<1;
+          break;
+
+        case NME_SPRYT_LW :
+          nme_unit[nme].abilities = NME_CAN_PASS_BOMBS |
+          			      NME_CONTACT_DEADLY;
+          nme_unit[nme].movement  = NME_MOVE_LEFT_WALL;
+          break;
+      }
+
+      if (nme_unit[nme].abilities & NME_WALK_HALF_SPEED) {
+        /* Ticker for half speed movement */
+        nme_unit[nme].misc[2] = 0;
+      }
+    }
+  }
+}
+
+int can_we_go(floor_tile *here, int direction, int abilities)
+{
+  /* Test specified tile.
+  ** Returns non-zero if we can walk over it.
+  */
+
+  if ((here->status&128)==0) {
+    /* Is it a pipe ending? We can't pass over pipe endings under any
+    ** conditions - extra1/2 used!
+    */
+    if (here->status>=24 && here->status<=27) {
+      /* Pipe ending - woaah! no way! */
+      return 0;
+    }
+
+    /* Blocking tile - can we walk over it? */
+    if (!(abilities & NME_CAN_PASS_WALLS)) return 0;
+
+    /* Is there already an enemy here? */
+    if (here->extra2 & EXISTS) return 0;
+
+    /* Some enemies, eg. ghosts, can pass through blockages */
+    return (here->sprite>=29 && here->sprite<=32);
+  }
+  else {
+    /* Non-blocking tile - is there anything already on it? */
+    if (here->extra2 & EXISTS) {
+      /* Tile already holds an enemy -> do not allow enemies to pass */
+      return 0;
+    }
+    else {
+      if (here->extra1 & EXISTS) {
+        /* Tile contains bomb - if we cannot walk over bombs, return */
+        if ((abilities & NME_CAN_PASS_BOMBS)==0) {
+          return 0;
+        }
+      }
+    }
+  }
+
+  /* We're still here, so we must be able to walk over tile
+  ** However, we may not *WANT* to. If this tile is on fire,
+  ** or contains part of an explosion stream, we don't want
+  ** to walk onto it.
+  */
+
+  return (here->blast) ? 0:1;
+}
+
+void enemy_becomes_bomb(enemy_ctrl_block *nme)
+{
+  /* We've got to try to change nme into a bomb */
+  int bomb,x,y;
+  floor_tile *t1, *t2;
+
+  for (bomb=0; bomb<64 && ((bombs[bomb].status&(1<<4))!=0); bomb++);
+
+  if (bomb<64) {
+    x = nme->x>>4;
+    y = nme->y>>4;
+
+    /* Empty bomb slot has been found. We can go ahead with the conversion */
+    if (nme->status & 1) {
+      /* Enemy is moving */
+      if (nme->anim_ctr>0) {
+        t1 = &floor_map[y+((nme->status&4) ? 1:0)]
+             	       [x+((nme->status&4) ? 0:1)];
+        t2 = &floor_map[y][x];
+      }
+      else {
+        t1 = &floor_map[y][x];
+        switch ((nme->status>>1)&3) {
+          case 0 : /* LEFT */
+            t2 = &floor_map[y][x-1]; break;
+          case 1 : /* RIGHT */
+            t2 = &floor_map[y][x+1]; break;
+          case 2 : /* UP */
+            t2 = &floor_map[y-1][x]; break;
+          case 3 : /* DOWN */
+            t2 = &floor_map[y+1][x]; break;
+        }
+      }
+
+      /* Unlink enemy from map */
+      t1->extra2 = 0;
+      t2->extra2 = 0;
+    }
+    else {
+      /* Unlink enemy from map */
+      floor_map[y][x].extra2 = 0;
+    }
+
+    /* Attempt to link new bomb to map.
+    ** If bomb already exists, set its timer to 2
+    */
+
+    /* Find closest tile */
+    x = (nme->x + 8)>>4;
+    y = (nme->y + 8)>>4;
+
+    if (floor_map[y][x].extra1 & EXISTS) {
+      /* There's already a bomb here! */
+      bombs[floor_map[y][x].extra1 & 63].timer = 2;
+    }
+    else {
+      /* There's no bomb! Let's make one! */
+      bombs[bomb].timer = 2;
+      bombs[bomb].owner = 255; /* CPU generated bomb */
+      bombs[bomb].xpos = x<<4;
+      bombs[bomb].ypos = y<<4;
+      bombs[bomb].zpos = 0;
+      bombs[bomb].type = 0;
+      bombs[bomb].status = 1<<4;
+      bombs[bomb].pushed_by = 255;
+
+      /* And link this bomb to the map */
+      floor_map[y][x].extra1 = bomb|128;
+    }
+
+    /* Transformation is complete. Deallocate enemy */
+    nme->status = 0;
+  }
+}
+
+void enemy_death_check(floor_tile *tile, int abilities, int nme)
+{
+  /* If enemy can be harmed by explosions, and tile contains an
+  ** explosion, initialise enemy death sequence
+  */
+
+  /* If we are already dying, don't need to do this */
+  if (nme_unit[nme].status & (1<<3)) return;
+
+  if (abilities & NME_BLOW_UPPABLE) {
+    if (tile->blast_len>4) {
+      /* Significant explosion left in this tile */
+      if (nme_unit[nme].type == NME_WANDERING_BOMB ||
+      	  nme_unit[nme].type == NME_TARGETING_BOMB) {
+
+        /* Ka-boom. */
+
+        /* We've got to turn our enemy into a bomb with a very short fuse */
+        enemy_becomes_bomb(&nme_unit[nme]);
+        score += enemy_scores[nme_unit[nme].type];
+      }
+      else {
+        nme_unit[nme].status |= 1<<3;
+        nme_unit[nme].anim_ctr = 0;
+        score += enemy_scores[nme_unit[nme].type];
+        NME_DEATH_SFX;
+      }
+    }
+  }
+  else {
+    int plr,mh;
+
+    mh = tile->men_here;
+
+    for (plr=0;plr<4;plr++) {
+      if (mh&(1<<plr)) {
+        /* Does this player have a plasma absorption suit on? */
+        if (players[plr].extra_flags & (1<<7)) {
+          /* Or whatever bit indicates the suit..
+          ** Contact! Our little monster has met his end */
+          nme_unit[nme].status |= 1<<3;
+          nme_unit[nme].anim_ctr = 0;
+          score += enemy_scores[nme_unit[nme].type];
+          NME_DEATH_SFX;
+        }
+      }
+    }
+  }
+}
+
+void nme_movement_random(floor_tile *tile, int abilities, int nme)
+{
+  /* Lifted from Moonquake! */
+  static ubyte newdir[4][4] = {
+    0,2,3,1,
+    1,2,3,0,
+    2,1,0,3,
+    3,1,0,2
+  };
+  ubyte dir, nextdir, r;
+  floor_tile *next_tile;
+
+  /* Our current direction */
+  dir = (nme_unit[nme].status>>1)&3;
+
+  /* Shake the dice */
+  r = rnd()&255;
+
+  /* New direction according to old direction */
+  if (r<128) {
+    nextdir = newdir[dir][0];
+  }
+  else {
+    if (r<176) {
+      nextdir = newdir[dir][1];
+    }
+    else {
+      nextdir = newdir[dir][(r<224) ? 2:3];
+    }
+  }
+
+  switch (nextdir) {
+    case 0 :
+      /* Go Left : */
+      if ((nme_unit[nme].x>>4)<2) return;
+      next_tile = tile-1;
+      break;
+
+    case 1 :
+      /* Go Right : */
+      if ((nme_unit[nme].x>>4)>=arena_depth) return;
+      next_tile = tile+1;
+      break;
+
+    case 2 :
+      /* Go Up : */
+      if ((nme_unit[nme].y>>4)<2) return;
+      next_tile = tile-32;
+      break;
+
+    case 3 :
+      /* Go Down : */
+      if ((nme_unit[nme].y>>4)>=arena_depth) return;
+      next_tile = tile+32;
+      break;
+  }
+
+  if (can_we_go(next_tile,nextdir,abilities)) {
+    /* Clear to move.. */
+    nme_unit[nme].status = (nme_unit[nme].status & 0xf8) |
+    			     (nextdir<<1) | 1;
+
+    next_tile->extra2 = 128 | 64 | nme;
+
+    nme_unit[nme].anim_ctr = 0;
+  }
+}
+
+void nme_movement_target(floor_tile *tile, int abilities, int nme)
+{
+  /* Find the closest player, and move towards him/her */
+  int plr;
+  int mindist, minplr, dist;
+  int dx,dy;
+  ubyte next_dir;
+  floor_tile *next_tile;
+
+  /* Find closest active player */
+  mindist = 1<<16;
+  minplr  = -1;
+  for (plr=0; plr<4; plr++) {
+    if (!((players[plr].status>>4)==5 && players[plr].anim_ctr==255)) {
+      dist = abs(nme_unit[nme].x-players[plr].xpos) +
+      	     abs(nme_unit[nme].y-players[plr].ypos);
+
+      if (dist<mindist) {
+        mindist = dist;
+        minplr = plr;
+      }
+    }
+  }
+
+  /* Home in on closest player if there is one */
+  if (minplr>=0) {
+    dx = nme_unit[nme].x-players[minplr].xpos;
+    dy = nme_unit[nme].y-players[minplr].ypos;
+
+    if (abs(dx)>abs(dy)) {
+      /* Move horizontally */
+      next_dir = (dx<0) ? 1:0;
+    }
+    else {
+      /* Move vertically */
+      next_dir = (dy<0) ? 3:2;
+    }
+
+    switch (next_dir) {
+      case 0 : next_tile = tile-1; break;
+      case 1 : next_tile = tile+1; break;
+      case 2 : next_tile = tile-32; break;
+      case 3 : next_tile = tile+32; break;
+    }
+
+    if (!can_we_go(next_tile,next_dir,abilities)) {
+      /* Try other direction */
+      if (abs(dx)<=abs(dy)) {
+        /* Move horizontally */
+        next_dir = (dx<0) ? 1:0;
+      }
+      else {
+        /* Move vertically */
+        next_dir = (dy<0) ? 3:2;
+      }
+
+      switch (next_dir) {
+        case 0 : next_tile = tile-1; break;
+        case 1 : next_tile = tile+1; break;
+        case 2 : next_tile = tile-32; break;
+        case 3 : next_tile = tile+32; break;
+      }
+
+      if (can_we_go(next_tile,next_dir,abilities)) {
+        /* Clear to move.. */
+        nme_unit[nme].status = (nme_unit[nme].status & 0xf8) |
+      			       (next_dir<<1) | 1;
+
+        next_tile->extra2 = 128 | 64 | nme;
+
+        nme_unit[nme].anim_ctr = 0;
+      }
+    }
+    else {
+      /* Clear to move.. */
+      nme_unit[nme].status = (nme_unit[nme].status & 0xf8) |
+    			       (next_dir<<1) | 1;
+
+      next_tile->extra2 = 128 | 64 | nme;
+
+      nme_unit[nme].anim_ctr = 0;
+    }
+  }
+}
+
+void nme_movement_horizontal(floor_tile *tile, int abilities, int nme)
+{
+  int dir;
+  floor_tile *next_tile;
+
+  /* Can we continue in our current direction? */
+  dir = (nme_unit[nme].status>>1)&3;
+
+  switch (dir) {
+    case 0 : next_tile = tile-1; break;
+    case 1 : next_tile = tile+1; break;
+    case 2 : next_tile = tile-32; break;
+    case 3 : next_tile = tile+32; break;
+  }
+
+  if (can_we_go(next_tile,dir,abilities)) {
+    /* Clear to move.. */
+    nme_unit[nme].status |= 1;
+
+    next_tile->extra2 = 128 | 64 | nme;
+
+    nme_unit[nme].anim_ctr = 0;
+  }
+  else {
+    /* Can't continue that way... so turn round */
+    dir^=1;
+
+    switch (dir) {
+      case 0 : next_tile = tile-1; break;
+      case 1 : next_tile = tile+1; break;
+      case 2 : next_tile = tile-32; break;
+      case 3 : next_tile = tile+32; break;
+    }
+
+    if (can_we_go(next_tile,dir,abilities)) {
+      /* Clear to move.. */
+      nme_unit[nme].status = (nme_unit[nme].status & 0xf8) |
+    			       (dir<<1) | 1;
+
+      next_tile->extra2 = 128 | 64 | nme;
+
+      nme_unit[nme].anim_ctr = 0;
+    }
+  }
+}
+
+void nme_movement_vertical(floor_tile *tile, int abilities, int nme)
+{
+  int dir;
+  floor_tile *next_tile;
+
+  /* Can we continue in our current direction? */
+  dir = (nme_unit[nme].status>>1)&3;
+
+  switch (dir) {
+    case 0 : next_tile = tile-1; break;
+    case 1 : next_tile = tile+1; break;
+    case 2 : next_tile = tile-32; break;
+    case 3 : next_tile = tile+32; break;
+  }
+
+  if (can_we_go(next_tile,dir,abilities)) {
+    /* Clear to move.. */
+    nme_unit[nme].status |= 1;
+
+    next_tile->extra2 = 128 | 64 | nme;
+
+    nme_unit[nme].anim_ctr = 0;
+  }
+  else {
+    /* Can't continue that way... so turn round */
+    dir^=1;
+
+    switch (dir) {
+      case 0 : next_tile = tile-1; break;
+      case 1 : next_tile = tile+1; break;
+      case 2 : next_tile = tile-32; break;
+      case 3 : next_tile = tile+32; break;
+    }
+
+    if (can_we_go(next_tile,dir,abilities)) {
+      /* Clear to move.. */
+      nme_unit[nme].status = (nme_unit[nme].status & 0xf8) |
+    			       (dir<<1) | 1;
+
+      next_tile->extra2 = 128 | 64 | nme;
+
+      nme_unit[nme].anim_ctr = 0;
+    }
+  }
+}
+
+void nme_movement_left_wall(floor_tile *tile, int abilities, int nme)
+{
+  floor_tile *next_tile;
+  ubyte left_dirs[4] = { 3,2,0,1 };
+  ubyte right_dirs[4] = { 2,3,1,0 };
+  ubyte next_dir, curr_dir;
+
+  /* Can we turn left? */
+  curr_dir = (nme_unit[nme].status>>1)&3;
+  next_dir = left_dirs[curr_dir];
+
+  switch (next_dir) {
+    case 0 : next_tile = tile-1; break;
+    case 1 : next_tile = tile+1; break;
+    case 2 : next_tile = tile-32; break;
+    case 3 : next_tile = tile+32; break;
+  }
+
+  if (can_we_go(next_tile,next_dir,abilities)) {
+    /* Clear to go left.. */
+    nme_unit[nme].status = (nme_unit[nme].status&0xf8) |
+    			   (next_dir<<1) | 1;
+
+    next_tile->extra2 = 128 | 64 | nme;
+
+    nme_unit[nme].anim_ctr = 0;
+  }
+  else {
+    /* Blocked, so let's try to carry on */
+    next_dir = curr_dir;
+
+    switch (next_dir) {
+      case 0 : next_tile = tile-1; break;
+      case 1 : next_tile = tile+1; break;
+      case 2 : next_tile = tile-32; break;
+      case 3 : next_tile = tile+32; break;
+    }
+
+    if (can_we_go(next_tile,next_dir,abilities)) {
+      /* Clear to go straight on... */
+      nme_unit[nme].status = (nme_unit[nme].status&0xf8) |
+      			      (next_dir<<1) | 1;
+
+      next_tile->extra2 = 128 | 64 | nme;
+
+      nme_unit[nme].anim_ctr = 0;
+    }
+    else {
+      /* Completely blocked! Turn right! */
+      nme_unit[nme].status = (nme_unit[nme].status&0xf8) |
+      			      (right_dirs[curr_dir]<<1);
+    }
+  }
+}
+
+void (*movement_routine[])(floor_tile *tile, int abilities, int nme) = {
+  nme_movement_random,
+  nme_movement_target,
+  nme_movement_horizontal,
+  nme_movement_vertical,
+  nme_movement_left_wall
+};
+
+void deallocate_bomb(floor_tile *tile)
+{
+  /* Deallocate the bomb located on the given tile. */
+
+  int bomb, old_ex;
+  floor_tile *other_tile;
+
+  /* Unlink bomb from current tile */
+  old_ex = tile->extra1;
+  tile->extra1 = 0;
+
+  bomb = old_ex & 63;
+
+  /* Unlink bomb from surrounding tiles */
+  other_tile = (tile-1);
+  if (other_tile->extra1 == old_ex && (other_tile->status&128))
+    other_tile->extra1 = 0;
+
+  other_tile = (tile+1);
+  if (other_tile->extra1 == old_ex && (other_tile->status&128))
+    other_tile->extra1 = 0;
+
+  other_tile = (tile-32);
+  if (other_tile->extra1 == old_ex && (other_tile->status&128))
+    other_tile->extra1 = 0;
+
+  other_tile = (tile+32);
+  if (other_tile->extra1 == old_ex && (other_tile->status&128))
+    other_tile->extra1 = 0;
+
+  /* Reset player's bomb count */
+  players[bombs[bomb].owner].bombs_layed--;
+  if (bombs[bomb].type==1 || bombs[bomb].type==2)
+    players[bombs[bomb].owner].bombs_layed &= 0x7f;
+
+  /* Deallocate bomb */
+  bombs[bomb].status = 0;
+}
+
+void update_enemies(void)
+{
+  /* Update all active enemy units */
+  int nme;
+  int dir;
+  int moving;
+  int status;
+  floor_tile *from_tile, *to_tile;
+
+  for (nme=0; nme<ENEMY_COUNT; nme++) {
+    status = nme_unit[nme].status;
+
+    if (status & EXISTS) {
+      /* Can't let them finish the level until all enemies are gone */
+      level_empty = 0;
+
+      /* Let's update this enemy */
+      dir = (status>>1)&3;
+      moving = status&1;
+
+      if (moving) {
+        if (nme_unit[nme].anim_ctr==0) {
+          switch (dir) {
+            case 0 : /* Left */
+              from_tile = &floor_map[nme_unit[nme].y>>4]
+              	      	          [nme_unit[nme].x>>4];
+              to_tile   = &floor_map[nme_unit[nme].y>>4]
+              	      	          [(nme_unit[nme].x>>4)-1];
+              break;
+
+            case 1 : /* Right */
+              from_tile = &floor_map[nme_unit[nme].y>>4]
+              	      	          [nme_unit[nme].x>>4];
+              to_tile   = &floor_map[nme_unit[nme].y>>4]
+              	      	          [1+(nme_unit[nme].x>>4)];
+              break;
+
+            case 2 : /* Up */
+              from_tile = &floor_map[nme_unit[nme].y>>4]
+              	      	          [nme_unit[nme].x>>4];
+              to_tile   = &floor_map[(nme_unit[nme].y>>4)-1]
+              	      	          [nme_unit[nme].x>>4];
+              break;
+
+            case 3 : /* Down */
+              from_tile = &floor_map[nme_unit[nme].y>>4]
+              	      	          [nme_unit[nme].x>>4];
+              to_tile   = &floor_map[1+(nme_unit[nme].y>>4)]
+              	      	          [nme_unit[nme].x>>4];
+              break;
+          }
+        }
+        else {
+          switch (dir) {
+            case 0 : /* Left */
+              from_tile = &floor_map[nme_unit[nme].y>>4]
+              	      	          [1+(nme_unit[nme].x>>4)];
+              to_tile   = &floor_map[nme_unit[nme].y>>4]
+              	      	          [nme_unit[nme].x>>4];
+              break;
+
+            case 1 : /* Right */
+              from_tile = &floor_map[nme_unit[nme].y>>4]
+              	      	          [nme_unit[nme].x>>4];
+              to_tile   = &floor_map[nme_unit[nme].y>>4]
+              	      	          [1+(nme_unit[nme].x>>4)];
+              break;
+
+            case 2 : /* Up */
+              from_tile = &floor_map[1+(nme_unit[nme].y>>4)]
+              	      	          [nme_unit[nme].x>>4];
+              to_tile   = &floor_map[nme_unit[nme].y>>4]
+              	      	          [nme_unit[nme].x>>4];
+              break;
+
+            case 3 : /* Down */
+              from_tile = &floor_map[nme_unit[nme].y>>4]
+              	      	          [nme_unit[nme].x>>4];
+              to_tile   = &floor_map[1+(nme_unit[nme].y>>4)]
+              	      	          [nme_unit[nme].x>>4];
+              break;
+          }
+        }
+      }
+      else {
+        /* Not moving */
+        from_tile = &floor_map[nme_unit[nme].y>>4][nme_unit[nme].x>>4];
+      }
+
+      enemy_death_check(from_tile,nme_unit[nme].abilities,nme);
+
+      /* Status may be altered */
+
+      status = nme_unit[nme].status;
+
+      if (status!=0) {
+        /* Enemy still exists */
+        if (moving && nme_unit[nme].anim_ctr>0)
+          enemy_death_check(to_tile,nme_unit[nme].abilities,nme);
+
+        /* Status may be altered */
+
+        status = nme_unit[nme].status;
+
+  	if (status!=0) {
+  	  /* Enemy still exists */
+          if (!(status & (1<<3))) {
+            /* We're not dying */
+            if (moving) {
+              int perform_move,movement;
+
+              /* continue animation */
+              if (nme_unit[nme].abilities & NME_WALK_HALF_SPEED) {
+                nme_unit[nme].misc[2] ^= 1;
+
+                movement = 1;
+                perform_move = (nme_unit[nme].misc[2]==0);
+              }
+              else {
+                perform_move = movement = 2;
+              }
+
+              if (dir&2) {
+                /* Vertical movement */
+                if (dir&1) {
+                  /* Down */
+                  nme_unit[nme].y += movement;
+                }
+                else {
+                  /* Up */
+                  nme_unit[nme].y -= movement;
+                }
+              }
+              else {
+                /* Horizontal movement */
+                if (dir&1) {
+                  /* Right */
+                  nme_unit[nme].x += movement;
+                }
+                else {
+                  /* Left */
+                  nme_unit[nme].x -= movement;
+                }
+              }
+
+	      if (perform_move) {
+                if ((++nme_unit[nme].anim_ctr)==8) {
+                  /* End of movement reached */
+                  status = nme_unit[nme].status = status & 0xfe;
+
+                  /* Reset animation to start */
+                  nme_unit[nme].anim_ctr = 0;
+
+                  /* Delete entry from last tile on map */
+                  from_tile->extra2 = 0;
+
+                  if (nme_unit[nme].type == NME_GHOST ||
+                  	nme_unit[nme].type == NME_TARGETING_GHOST) {
+
+                    /* Time till next move */
+                    nme_unit[nme].misc[0] = NME_PAUSE;
+                  }
+                }
+              }
+            }
+            else {
+              /* We've stopped moving */
+              int do_move = 0;
+
+              /* First, do any enemy specific stuff,
+              **  eg. eating bombs, exploding bombs, lighting fires, etc.
+              */
+              switch (nme_unit[nme].type) {
+                case NME_BOMB_EATER_RED :
+                case NME_BOMB_EATER_GREEN :
+                  /* If tile contains an active bomb (that is not moving?),
+                  ** deallocate it.
+                  */
+                  if (from_tile->extra1 & EXISTS) {
+                    /* There's a bomb in extra1 */
+                    deallocate_bomb(from_tile);
+                  }
+
+                  break;
+
+		case NME_WANDERING_BOMB :
+		case NME_TARGETING_BOMB :
+		  /* If one of surrounding tiles contains a player,
+		  ** Explode!
+		  */
+		  if (from_tile->men_here ||
+		      (from_tile-1)->men_here ||
+		      (from_tile+1)->men_here ||
+		      (from_tile-32)->men_here ||
+		      (from_tile+32)->men_here) {
+
+		    enemy_becomes_bomb(&nme_unit[nme]);
+
+		    if (nme_unit[nme].status==0) {
+		      /* This enemy has blown up! Abort further action */
+		      continue;
+		    }
+		  }
+
+		case NME_SPRYT_H :
+		case NME_SPRYT_V :
+		case NME_SPRYT_LW : {
+		  /* If tile contains bomb, blow it up */
+		  ubyte b;
+
+		  if (from_tile->extra1 & (1<<7)) {
+		    /* There's a bomb here */
+		    b = from_tile->extra1 & 63;
+
+		    if (bombs[b].timer>2) bombs[b].timer=2;
+		  }
+		  else {
+		    if (from_tile->status == 128+20) {
+		      /* Fuel leak - light it */
+		      from_tile->status = 128; /* Normal floor */
+		      from_tile->sprite = 33+5; /* Burn */
+		      from_tile->blast = 9;
+		      from_tile->blast_len = 20-5;
+		    }
+		  }
+		}
+                default :
+                  break;
+              }
+
+    	      /* enemy types GHOST and TARGETING_GHOST move slowly -
+    	      ** a timer must pass before the next movement takes place
+    	      */
+    	      if (nme_unit[nme].type == NME_GHOST ||
+    	          nme_unit[nme].type == NME_TARGETING_GHOST) {
+
+    	        if (nme_unit[nme].misc[0]) {
+    	          nme_unit[nme].misc[0]--;
+    	        }
+    	        else {
+    	          do_move = 1;
+    	        }
+    	      }
+    	      else {
+    	        /* Normal speed enemies move all the time (if they can) */
+    	        do_move = 1;
+    	      }
+
+    	      if (do_move) {
+                (movement_routine[nme_unit[nme].movement])
+                   (from_tile,nme_unit[nme].abilities,nme);
+              }
+            }
+          }
+          else {
+            /* enemy is dying */
+            if ((++nme_unit[nme].anim_ctr)==20) {
+              ubyte ref;
+              int offx, offy;
+
+              /* Death is complete - deallocate enemy */
+              nme_unit[nme].status = 0;
+
+              /* Unlink from map */
+              ref = from_tile->extra2;
+
+              for (offy=1; offy<arena_depth; offy++) {
+                for (offx=1; offx<20; offx++) {
+                  if (floor_map[offy][offx].extra2 == ref)
+                    floor_map[offy][offx].extra2 = 0;
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+void init_enemies(void)
+{
+  /* Initialise all enemy blocks */
+  int nme;
+
+  for (nme=0; nme<ENEMY_COUNT; nme++) nme_unit[nme].status = 0;
+}
+
+

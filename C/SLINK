@@ -1,0 +1,611 @@
+#include "mqhead.h"
+#include "debug.h"
+#include "pwl.h"
+#include "slink.h"
+
+int  (*sdev_driver)(int,...);
+int  *sdev_speed;
+int  sdev_numofspeeds;
+int  sdev_flags, sdev_version;
+char *sdev_info;
+char *sdev_creator;
+int  sdev_driver_count;
+int  sdev_highest_port;
+int  sdev_curr_driver;
+int  sdev_curr_speed_index;
+int  sdev_curr_port;
+
+BOOL BBS_mode = FALSE;
+
+SDEV_BLOCK drivers[16];
+
+int driver_block[1024];
+
+void reset_serial_link(void)
+{
+  (sdev_driver)(DRIVER_TXSPEED,sdev_curr_port,sdev_speed[sdev_curr_speed_index]);
+  (sdev_driver)(DRIVER_RXSPEED,sdev_curr_port,sdev_speed[sdev_curr_speed_index]);
+}
+
+ubyte serial_get_byte_wait(int csecs)
+{
+  /* Wait up to specified number of centiseconds for byte.
+  ** Return byte, or 0 if timeout.
+  ** timed_out flag is set accordingly.
+  */
+  _kernel_swi_regs r;
+  int start;
+  int b;
+  ubyte d;
+
+  csecs+=300;
+
+  timed_out = FALSE;
+
+  /* Start clock */
+  _kernel_swi(OS_ReadMonotonicTime,&r,&r);
+  start = r.r[0];
+
+  do {
+    _kernel_swi(OS_ReadMonotonicTime,&r,&r);
+    if ((r.r[0] - start) > csecs) {
+      timed_out = TRUE;
+      return 0;
+    }
+
+    b = (sdev_driver)(DRIVER_CHECKRX,sdev_curr_port);
+    /*logfile("rx buff=%d\n",b);*/
+  } while (b==0 /* was slink_input_buffer_empty()*/);
+
+  /*logfile("b = %d\n",b);*/
+  /* was return slink_read_byte();*/
+  d = ((sdev_driver)(DRIVER_GETBYTE,sdev_curr_port));
+  /*logfile("in %d\n",d);*/
+  return d;
+}
+
+BOOL serial_send_byte_wait(ubyte b, int csecs)
+{
+  /* Wait up to specified number of centiseconds for byte to send.
+  ** Return TRUE if sent, FALSE otherwise.
+  ** timed_out flag is set accordingly.
+  */
+  BOOL full;
+  _kernel_swi_regs r;
+  int start, bc, c;
+
+  csecs+=300;
+
+  timed_out = FALSE;
+
+  /*bc = (sdev_driver)(DRIVER_CHECKTX,sdev_curr_port);*/
+  /*logfile("bc read as %d\n",bc);*/
+
+  /* Start clock */
+  _kernel_swi(OS_ReadMonotonicTime,&r,&r);
+  start = r.r[0];
+
+  do {
+    _kernel_swi(OS_ReadMonotonicTime,&r,&r);
+    if ((r.r[0] - start) > csecs) {
+      timed_out = TRUE;
+      return FALSE;
+    }
+    full = (( c = (sdev_driver)(DRIVER_PUTBYTE,sdev_curr_port,b)) == -1); /* was slink_send_byte(b);*/
+    /*logfile("tx, c=%d\n",c);*/
+  } while (full);
+
+  /* was while (!slink_output_buffer_empty()); */
+  /*logfile("sent byte, wait for buffer clear\n");*/
+  /*while (((sdev_driver)(DRIVER_CHECKTX,sdev_curr_port))!=bc);*/
+
+  /*logfile("out %d\n",b);*/
+
+  return TRUE;
+}
+
+BOOL exchange_names(void)
+{
+  int p,c;
+  ubyte b;
+
+  /* Exchange player names */
+  for (p=0; p<4; p++) {
+    if (plr_type[p] != PLR_SLEEPING) {
+      if (plr_type[p] == PLR_REMOTE) {
+        /* Receive name from other machine */
+        /*logfile("player %d is remote... fetching name\n",p);*/
+        c = 0;
+
+        do {
+          b = serial_get_byte_wait(200);
+          /*logfile("slave got byte %d (%c)\n",b,b);*/
+          if (timed_out) return FALSE;
+          players[p].name[c] = b;
+          osbyte(19,0,0);
+        } while (players[p].name[c++]);
+
+        /*serial_send_byte_wait(*/
+      }
+      else {
+        /* Send name to other machine */
+        /*logfile("player %d is local... sending name\n",p);*/
+        c = 0;
+
+        do {
+          serial_send_byte_wait(b=players[p].name[c],500);
+          /*logfile("slave sent byte %d (%c)\n",b,b);*/
+          if (timed_out) return FALSE;
+          osbyte(19,0,0);
+        } while (players[p].name[c++]);
+      }
+    }
+  }
+
+  return TRUE;
+}
+
+BOOL receive_BBS_names(void)
+{
+  int p,c;
+  ubyte b;
+
+  /* Exchange player names */
+  for (p=0; p<4; p++) {
+    if (plr_type[p] != PLR_SLEEPING) {
+      /* Receive name from server */
+      /*logfile("player %d is remote... fetching name\n",p);*/
+      c = 0;
+
+      do {
+        b = serial_get_byte_wait(200);
+        /*logfile("slave got byte %d (%c)\n",b,b);*/
+        if (timed_out) return FALSE;
+        players[p].name[c] = b;
+        osbyte(19,0,0);
+      } while (players[p].name[c++]);
+
+      /*serial_send_byte_wait(*/
+    }
+  }
+
+  return TRUE;
+}
+
+BOOL serial_sync_master(void)
+{
+  ubyte b;
+  ubyte out[] = { 'M','r','q','a','e' };
+  ubyte in[] = { 'a','s','u','k','!' };
+  int delay[] = { 20*100, 5*100, 100, 50, 20 };
+  int c;
+
+  /* Attempt sync with slave machine */
+  for (c=0; c<5; c++) {
+    /* was (sdev_driver)(DRIVER_PUTBYTE,sdev_curr_port,out[c]);*/
+    /*logfile("Master sending byte %d (%c)\n",out[c],out[c]);*/
+    serial_send_byte_wait(out[c],20);
+    /* was slink_send_byte(out[c]); */
+
+    b = serial_get_byte_wait(delay[c]);
+
+    if (b!=in[c] || timed_out) return FALSE;
+    /*logfile("Master got byte %d (%c)\n",b,b);*/
+  }
+
+  serial_linked = TRUE;
+  serial_master = TRUE;
+  serial_broken = FALSE;
+
+  /* Send player details */
+  for (b=0; b<4; b++) {
+    serial_send_byte_wait(plr_type[b],20);
+    /*logfile("Sent player type %d\n",b);*/
+  }
+
+  exchange_names();
+
+  /* was slink_flush_output_buffer();*/
+  (sdev_driver)(DRIVER_FLUSHTX,sdev_curr_port);
+
+  return TRUE;
+}
+
+BOOL serial_detect_sync(void)
+{
+  ubyte b;
+  ubyte out[] = { 'M','r','q','a','e' };
+  ubyte in[] = { 'a','s','u','k','!' };
+  int c;
+
+  BBS_mode = FALSE;
+
+  /* See if master is trying to sync with us */
+  /* was if (slink_input_buffer_empty()) return FALSE; */
+  if (((sdev_driver)(DRIVER_CHECKRX,sdev_curr_port))==0) return FALSE;
+
+  for (c=0; c<5; c++) {
+    b = serial_get_byte_wait(20);
+
+    /* If the 'e' has been changed to a 'B', then enable BBS mode */
+    if (out[c] == 'e') {
+      if (timed_out) return FALSE;
+
+      if (b == 'B') BBS_mode = TRUE;
+      else if (b != 'e') return FALSE;
+    }
+    else if (b!=out[c] || timed_out) return FALSE;
+    /*logfile("slave got byte %d (%c)\n",b,b);*/
+
+    /* was slink_send_byte(in[c]); */
+    /* was (sdev_driver)(DRIVER_PUTBYTE,sdev_curr_port,in[c]);*/
+    /*logfile("sending byte %d (%c)\n",in[c],in[c]);*/
+    serial_send_byte_wait(in[c],20);
+  }
+
+  /* If we've got this far, link has been established */
+  serial_linked = TRUE;
+  serial_master = FALSE;
+  serial_broken = FALSE;
+
+  /* Receive player details */
+  for (b=0; b<4; b++) {
+    plr_type[b] = serial_get_byte_wait(20);
+    /*logfile("got player type %d\n",plr_type[b]);*/
+
+    switch (plr_type[b]) {
+      case PLR_HUMAN :
+        plr_type[b] = PLR_REMOTE;
+        break;
+
+      case PLR_CPU :
+        plr_type[b] = PLR_REMOTE;
+        break;
+
+      case PLR_REMOTE :
+        plr_type[b] = PLR_HUMAN;
+        break;
+    }
+  }
+
+  if (BBS_mode) receive_BBS_names();
+  else exchange_names();
+
+  /* was slink_flush_input_buffer();*/
+  (sdev_driver)(DRIVER_FLUSHRX, sdev_curr_port);
+
+  return TRUE;
+}
+
+void driver_init(void);
+void serial_sys_init(void)
+{
+  /* was slink_init(); */
+
+  /* Flush buffers */
+  /* was slink_flush_input_buffer();*/
+  (sdev_driver)(DRIVER_FLUSHRX,sdev_curr_port);
+  /* was slink_flush_output_buffer();*/
+  (sdev_driver)(DRIVER_FLUSHTX,sdev_curr_port);
+
+  serial_broken = FALSE;
+  serial_linked = FALSE;
+}
+
+BOOL serial_sync_pregame_slave(void)
+{
+  ubyte b;
+  ubyte *bp;
+  int p, c;
+
+  /*logfile("slave sync :\n");*/
+
+  /* Send Sync */
+  serial_send_byte_wait('S',10*60*100);
+
+  b = serial_get_byte_wait(10*60*100);
+
+  if (timed_out || b!='Y') {
+    /*logfile("c--\n");*/
+    return FALSE;
+  }
+
+  /* Get battle lives */
+  b= battle_lives = serial_get_byte_wait(50);
+  if (timed_out) return FALSE;
+  /*logfile("slave got byte %d\n",b);*/
+
+  /* Get battle rounds */
+  b=battle_rounds = serial_get_byte_wait(50);
+  if (timed_out) return FALSE;
+  /*logfile("slave got byte %d\n",b);*/
+
+  /* Get battle level */
+  b=battle_level = serial_get_byte_wait(50);
+  if (battle_level == 254) battle_level = -1;
+  if (timed_out) return FALSE;
+  /*logfile("slave got byte %d\n",b);*/
+
+  /* Get bonus quantity */
+  b=bonus_quant = serial_get_byte_wait(50);
+  if (timed_out) return FALSE;
+  /*logfile("slave got byte %d\n",b);*/
+
+  /* Get fuse length & index */
+  fuse_length = serial_get_byte_wait(50);
+  if (timed_out) return FALSE;
+  fuse_length_index = serial_get_byte_wait(50);
+  if (timed_out) return FALSE;
+
+  if (exchange_names() == FALSE) return FALSE;
+
+  /* Get rnd seed */
+  bp = (ubyte *) &rnd_seed;
+
+  /*logfile("Waiting for random seed\n");*/
+  for (p=0; p<4; p++) {
+    b = serial_get_byte_wait(50);
+    /*logfile("Got byte %d : %d\n",p,b);*/
+    if (timed_out) return FALSE;
+
+    *bp = b;
+    bp++;
+  }
+
+  serial_rnd_seed = rnd_seed;
+
+  /*logfile("Slave sync ok\n");*/
+  /* All done! */
+  return TRUE;
+}
+
+BOOL serial_sync_pregame_master(void)
+{
+  ubyte b;
+  ubyte *bp;
+  int p, c;
+
+  /*logfile("C**\n");*/
+
+  /* Wait for Sync - could be some time */
+  b = serial_get_byte_wait(10 * 60 * 100);
+  /*logfile("slave got byte %d (%c)\n",b,b);*/
+
+  if (timed_out || b!='S') return FALSE;
+
+  serial_send_byte_wait('Y',50);
+  if (timed_out) return FALSE;
+
+  /* Send battle lives */
+  serial_send_byte_wait(battle_lives,50);
+  if (timed_out) return FALSE;
+
+  /* Send battle rounds */
+  serial_send_byte_wait(battle_rounds,50);
+  if (timed_out) return FALSE;
+
+  /* Send battle level */
+  if (battle_level == -1) {
+    /* random */
+    serial_send_byte_wait(254,50);
+  }
+  else {
+    serial_send_byte_wait(battle_level,50);
+  }
+  if (timed_out) return FALSE;
+
+  /* Send bonus quantity */
+  serial_send_byte_wait(bonus_quant,50);
+  if (timed_out) return FALSE;
+
+  /* Send fuse length & index */
+  serial_send_byte_wait(fuse_length,50);
+  if (timed_out) return FALSE;
+  serial_send_byte_wait(fuse_length_index,50);
+  if (timed_out) return FALSE;
+
+  if (exchange_names() == FALSE) return FALSE;
+
+  /* Send rnd seed */
+  serial_rnd_seed = rnd_seed;
+  bp = (ubyte *) &rnd_seed;
+
+  /*logfile("Master : seed = %08x\n",rnd_seed);*/
+
+  for (p=0; p<4; p++) {
+    b = *bp;
+
+    if (b==255) {
+      b = 253;
+      *bp = b;
+    }
+
+    serial_send_byte_wait(b,50);
+    /*logfile("Master : sending byte %02x\n",b);*/
+    if (timed_out) return FALSE;
+
+    bp++;
+  }
+
+  /* All done! */
+  return TRUE;
+}
+
+/***---------------------------------------------------------------------***/
+
+
+void load_default_driver(void)
+{
+  int i;
+
+  battle_vsync = FALSE;
+
+  /* Select initial driver (preferably 'internal', type=0) */
+  sdev_curr_driver = 0;
+  for (i=0; i<sdev_driver_count && ((drivers[i].number>>8)&255)!=0; i++);
+  if (i<sdev_driver_count) sdev_curr_driver = i;
+
+  driver_load(drivers[sdev_curr_driver].file);
+}
+
+void init_serial_drivers(void)
+{
+  os_gbpb_str r;
+  char drivername[20],temp[60];
+  int nd=0, i;
+  FILE *drvcheck;
+
+  /* Build table of availiable drivers */
+  /* Scan directory */
+  r.action=9;
+  r.file_handle=(int)"<SerialDev$Path>Modules";
+  r.data_addr=drivername;
+  r.seq_point=0; r.buf_len=20;
+  r.wild_fld=NULL;
+
+  do {
+    r.number=1;
+    pwl_os_gbpb(&r);
+    if (r.number) {
+      /* Got filename, check driver */
+      sprintf(temp,"<SerialDev$Path>Modules.%s.Driver",drivername);
+      if ((drvcheck=fopen(temp,"rb"))!=NULL) {
+        strcpy(drivers[nd].file,drivername);
+        fseek(drvcheck,0x80,SEEK_SET);
+        fread(drivers[nd].info,1,32,drvcheck);
+        fseek(drvcheck,0xa0,SEEK_SET);
+        fread(drivers[nd].creator,1,32,drvcheck);
+        fseek(drvcheck,0xc4,SEEK_SET);
+        fread(&drivers[nd].flags,1,4,drvcheck);
+        fseek(drvcheck,0xc0,SEEK_SET);
+        fread(&i,1,4,drvcheck);
+        drivers[nd].vmajor = (i>>16)&0xffff;
+        drivers[nd].vminor = i&0xffff;
+        fseek(drvcheck,0xc8,SEEK_SET);
+        fread(&drivers[nd++].number,1,4,drvcheck);
+        fclose(drvcheck);
+        /*logfile("Driver '%s', number 0x%x\n",drivers[nd-1].file,drivers[nd-1].number);*/
+      }
+    }
+  } while (r.number);
+
+  /* Terminate list */
+  drivers[nd].info[0]=0;
+
+  sdev_driver_count = nd;
+
+  *((int**) &sdev_driver) = &driver_block[0];
+
+  /* Attempt to open serial choices file */
+  if ((drvcheck = fopen(ser_config_file,"rb")) != NULL) {
+    /* Found serial choices */
+    sdev_curr_driver = fgetc(drvcheck);
+    for (i=0; i<sdev_driver_count &&
+    	      ((drivers[i].number>>8)&255)!=sdev_curr_driver; i++);
+
+    if (i==sdev_driver_count) {
+      /* Driver not found - load default */
+      load_default_driver();
+    }
+    else {
+      int spd;
+
+      sdev_curr_driver = i;
+
+      driver_load(drivers[sdev_curr_driver].file);
+
+      /* Read port number */
+      sdev_curr_port = fgetc(drvcheck);
+      if (sdev_curr_port > sdev_highest_port) sdev_curr_port=0;
+
+      /* Read serial speed */
+      spd = getw(drvcheck);
+
+      for (i=0; i<sdev_numofspeeds; i++) {
+        if (sdev_speed[i] == spd) {
+          sdev_curr_speed_index = i;
+        }
+      }
+
+      /* Read vsync flag */
+      spd = fgetc(drvcheck);
+      battle_vsync = (spd!=0) ? TRUE:FALSE;
+
+      fclose(drvcheck);
+    }
+  }
+  else {
+    load_default_driver();
+  }
+}
+
+void save_serial_choices(void)
+{
+  FILE *f;
+
+  if ((f=fopen(ser_config_file,"wb"))!=NULL) {
+    /* Write driver type */
+    fputc((drivers[sdev_curr_driver].number>>8)&255,f);
+
+    /* Write port number */
+    fputc(sdev_curr_port,f);
+
+    /* Write serial speed */
+    putw(sdev_speed[sdev_curr_speed_index],f);
+
+    /* Write vsync flag */
+    fputc((battle_vsync) ? 1:0, f);
+
+    fclose(f);
+  }
+}
+
+void *driver_load(char *drivername)
+{
+  FILE *drv;
+  long len;
+  char temp[60];
+
+  sprintf(temp,"<SerialDev$Path>Modules.%s.Driver",drivername);
+  if ((drv=fopen(temp,"rb"))==NULL) return NULL;
+  fseek(drv,0,SEEK_END);
+  len=ftell(drv);
+  fseek(drv,0,SEEK_SET);
+  fread(driver_block,1,len,drv);
+  fclose(drv);
+
+  /* NOTE! Should really call initialise entry before checking ANY of the below */
+  (sdev_driver)(DRIVER_INITIALISE,0,NULL);
+
+  sdev_flags=driver_block[49];
+  sdev_version=driver_block[48];
+  sdev_speed=&driver_block[64];
+  sdev_info=(char*)&driver_block[32];
+  sdev_creator=(char*)&driver_block[40];
+
+  sdev_numofspeeds=0;
+  while(sdev_speed[sdev_numofspeeds++]);
+  sdev_numofspeeds--;
+
+  if (sdev_flags & 1) sdev_highest_port = (sdev_flags>>24)&255;
+  else sdev_highest_port = 0;
+
+  sdev_curr_speed_index = 0;
+  sdev_curr_port = 0;
+
+  for (len=0; len<sdev_numofspeeds; len++) {
+    if (sdev_speed[len] == 19200) {
+      sdev_curr_speed_index = len;
+    }
+  }
+
+  return (driver_block);
+}
+
+void serial_poll(void)
+{
+  if (sdev_flags & 0x10) {
+    /* Driver requires polling */
+    (sdev_driver)(DRIVER_POLL,sdev_curr_port);
+  }
+}

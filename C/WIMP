@@ -1,0 +1,1697 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "mqhead.h"
+
+#define INSTANTIATE_VARS
+
+#include "pwl.h"
+#include "debug.h"
+
+#include "slink.h"
+
+extern void game_main(void);
+extern void cold_start(void);
+extern void shutdown_permanent(void);
+
+
+typedef enum {
+  ICON_MENU = 0,
+  SDEV_SPEED_MENU,
+  SDEV_DEV_MENU
+} MENU_TYPES;
+
+PWL_TASK      this_task;
+wimp_icreate  our_icon;
+wimp_i	      our_icon_handle;
+wimp_w	      our_window_handle;
+wimp_w	      our_window_handle2;
+wimp_box      screen_size;
+MENU_TYPES    curr_menu;
+BOOL	      modified = FALSE;
+int	      curr_wimp_mode;
+
+/*** End of important icons ************************************************/
+
+void ask_user(char *err, char *default_opt, char *opt);
+
+struct {
+  wimp_menustr     menu;
+  wimp_menuitem    item[32];
+  int		   items;
+} sdev_menu;
+
+struct {
+  wimp_menustr     menu;
+  wimp_menuitem    item[4];
+} icon_menu;
+
+struct {
+  wimp_w           handle;
+  wimp_openstr     opener;
+  wimp_wind        window;
+  wimp_icon	   icons[16];
+  BOOL		   open;
+  wimp_i	   deflt_opt;
+  wimp_i	   other_opt;
+} error_win;
+
+struct {
+  wimp_w           handle;
+  wimp_openstr     opener;
+  wimp_wind        window;
+  wimp_icon	   icons[16];
+  BOOL		   open;
+  wimp_i	   opt;
+} msg_win;
+
+struct {
+  wimp_w           handle;
+  wimp_openstr     opener;
+  wimp_wind        window;
+  wimp_icon	   icons[16];
+  BOOL		   open;
+  wimp_i	   speed_ic;
+  wimp_i	   speed_pick_ic;
+  wimp_i	   driver_ic;
+  wimp_i	   driver_pick_ic;
+  wimp_i	   port_inc_ic;
+  wimp_i	   port_dec_ic;
+  wimp_i	   port_num_ic;
+  wimp_i	   vsync_ic;
+  char		   curr_driver_inf[32];
+  char		   curr_creator_inf[32];
+  char		   curr_speed[12];
+  char		   curr_driver[20];
+  char		   curr_port[4];
+} sdev_win;
+
+struct {
+  wimp_w           handle;
+  wimp_openstr     opener;
+  wimp_wind        window;
+  wimp_icon	   icons[5];
+  BOOL		   open;
+} flash_win;
+
+struct {
+  wimp_w           handle;
+  wimp_wind        window;
+  wimp_icon	   icons[11];
+} info_box;
+
+char error_msg[4][32];
+char deflt_opt[16];
+char other_opt[16];
+char ask_user_state;
+
+wimp_msgstr our_msg;
+
+int recog_mess[] = {
+  wimp_MDATASAVE, /* request to identify directory */
+  wimp_MDATASAVEOK, /* reply to message type 1 */
+  wimp_MDATALOAD, /* request to load/insert dragged icon */
+  wimp_MDATALOADOK, /* reply that file has been loaded */
+  wimp_MDATAOPEN, /* warning that an object is to be opened */
+  wimp_MRAMFETCH, /* transfer data to buffer in my workspace */
+  wimp_MRAMTRANSMIT, /* I have transferred some data to a buffer in your
+                             workspace */
+  wimp_MPREQUIT,
+  wimp_PALETTECHANGE,
+  wimp_SAVEDESK, /* Wimp 2.43 onwards - desktop closedown message */
+  wimp_MDEVICECLAIM, /* Broadcast before an application can claim parallel port, RS232 port etc. */
+  wimp_MDEVICEINUSE, /* Reply if another application is already using the device */
+  wimp_MDATASAVED, /* A file previously saved has become 'safe' */
+  0
+};
+
+char io_buffer[40*1024];
+
+
+void get_screen_size(void)
+{
+  int xe,ye;
+
+  xe = pwl_os_readmodevariable(-1,4);
+  ye = pwl_os_readmodevariable(-1,5);
+
+  /* screen size in external coordinates */
+  screen_size.x1 = (pwl_os_readmodevariable(-1,11)+1)<<xe;
+  screen_size.y1 = (pwl_os_readmodevariable(-1,12)+1)<<ye;
+
+  /* screen centre in external coordinates */
+  screen_size.x0 = screen_size.x1>>1;
+  screen_size.y0 = screen_size.y1>>1;
+}
+
+void set_menu_header(wimp_menustr *menu, char *name)
+{
+  /* Set up menu with default settings */
+  strcpy(menu->hdr.title,name);
+  menu->hdr.tit_fcol = 7;
+  menu->hdr.tit_bcol = 2;
+  menu->hdr.work_fcol = 7;
+  menu->hdr.work_bcol = 0;
+  menu->hdr.width = 64;
+  menu->hdr.height = 44;
+  menu->hdr.gap = 0;
+}
+
+void set_menu_item(wimp_menuitem *item, char *name, wimp_menuflags f)
+{
+  /* Sets up a default text entry in a menu */
+  item->flags = f;
+  item->submenu = (wimp_menuptr) -1;
+  if (strlen(name)<12) {
+    item->iconflags = wimp_ITEXT | wimp_IFILLED | (wimp_IFORECOL*7);
+    strcpy(item->data.text, name);
+  }
+  else {
+    item->iconflags = wimp_ITEXT | wimp_IFILLED |
+    		      wimp_INDIRECT | (wimp_IFORECOL*7);
+
+    item->data.indirecttext.buffer = name;
+    item->data.indirecttext.validstring = (char *) -1;
+    item->data.indirecttext.bufflen = strlen(name)+1;
+  }
+}
+
+void set_group_box(wimp_icon *border, wimp_icon *header,
+     		   int x0, int y0, int x1, int y1, char *title)
+{
+  border->box.x0 = x0;
+  border->box.y0 = y0;
+  border->box.x1 = x1;
+  border->box.y1 = y1;
+  border->flags = wimp_ITEXT | wimp_IBORDER |
+  		  wimp_INDIRECT | (wimp_IFORECOL*7);
+  border->data.indirecttext.buffer = "";
+  border->data.indirecttext.validstring = "R4";
+  border->data.indirecttext.bufflen = 1;
+
+  header->box.x0 = x0 + 16;
+  header->box.y0 = y1 - 20;
+  header->box.x1 = x0 + (strlen(title)*18) + 14;
+  header->box.y1 = y1 + 12;
+  header->flags = wimp_ITEXT | wimp_IFILLED | wimp_IHCENTRE |
+  		  wimp_INDIRECT | (wimp_IFORECOL*7) | (wimp_IBACKCOL*1);
+  header->data.indirecttext.buffer = title;
+  header->data.indirecttext.validstring = (char *) -1;
+  header->data.indirecttext.bufflen = strlen(title+1);
+}
+
+int load_scrap(char *addr, int max)
+{
+  /* Load scrap file at given address, then delete scrap file
+  ** Return length loaded
+  */
+  int l;
+  char datum;
+  FILE *f;
+
+  f = fopen("<Wimp$Scrap>","rb");
+
+  if (f==NULL) {
+    /* No scrap file to load */
+    return 0;
+  }
+
+  l = 0;
+  do {
+    datum = fgetc(f);
+    if (!feof(f)) {
+      *(addr+l) = datum;
+      l++;
+    }
+  } while (!feof(f) && l<max);
+
+  fclose(f);
+
+  pwl_del_scrap();
+
+  return l;
+}
+
+int load_file_into_buffer(char *fname, char *addr, int max)
+{
+  /* Load scrap file at given address, then delete scrap file
+  ** Return length loaded
+  */
+  int l;
+  char datum;
+  FILE *f;
+
+  f = fopen(fname,"rb");
+
+  if (f==NULL) {
+    /* No file to load */
+#ifndef NO_LOGFILE
+    logfile("Can't open '%s'\n",fname);
+#endif
+    return 0;
+  }
+
+  l = 0;
+  do {
+    datum = fgetc(f);
+    if (!feof(f)) {
+      *(addr+l) = datum;
+      l++;
+    }
+  } while (!feof(f) && l<max);
+
+  fclose(f);
+
+  return l;
+}
+
+void confine_mouse(int left, int right, int top, int bottom)
+{
+  mouse_bound b;
+
+  b.code = 1;
+
+  b.left_lsb = left & 0xff;
+  b.left_msb = (left>>8) & 0xff;
+
+  b.right_lsb = right & 0xff;
+  b.right_msb = (right>>8) & 0xff;
+
+  b.top_lsb = top & 0xff;
+  b.top_msb = (top>>8) & 0xff;
+
+  b.bottom_lsb = bottom & 0xff;
+  b.bottom_msb = (bottom>>8) & 0xff;
+
+  pwl_mouse_confine(&b);
+}
+
+void free_mouse(void)
+{
+  confine_mouse(0,screen_size.x1-1,screen_size.y1-1,0);
+}
+
+void init_default_window(wimp_wind *w, char *title)
+{
+  /* Set window default values */
+  w->scx = 0;
+  w->scy = 0;
+  w->behind = -1;
+  w->flags = wimp_WMOVEABLE |
+  	     wimp_REDRAW_OK |
+	     wimp_WQUIT |
+	     wimp_WBACK |
+	     wimp_WTITLE |
+	     wimp_WTOGGLE |
+	     wimp_WVSCR |
+	     wimp_WSIZE |
+	     wimp_WHSCR |
+	     wimp_WNEW;
+  w->colours[wimp_WCTITLEFORE] = 7;
+  w->colours[wimp_WCTITLEBACK] = 2;
+  w->colours[wimp_WCWKAREAFORE] = 7;
+  w->colours[wimp_WCWKAREABACK] = 1;
+  w->colours[wimp_WCSCROLLOUTER] = 3;
+  w->colours[wimp_WCSCROLLINNER] = 1;
+  w->colours[wimp_WCTITLEHI] = 12;
+  w->colours[wimp_WCRESERVED] = 0;
+  w->titleflags = wimp_ITEXT | wimp_INDIRECT | wimp_IHCENTRE;
+  w->title.indirecttext.buffer = title;
+  w->title.indirecttext.validstring = (char *) -1;
+  w->title.indirecttext.bufflen = strlen(title)+1;
+  w->workflags = 1;
+  w->spritearea = (void *) 1;
+  w->minsize = 0;
+}
+
+void init_info_window(void)
+{
+  int ic, l;
+  static char *info_text[][2] = {
+    "Web","http://www.cyplexia.demon.co.uk/mq.html",
+    "Version","1.14 (18 June 2000)",
+    "Author","© Paul Taylor",
+    "Purpose","Shareware Game",
+    "Name","Marsquake Boom:Deluxe"
+  };
+
+  init_default_window(&info_box.window, "About this program");
+
+  info_box.window.flags = wimp_WMOVEABLE |
+  	     		  wimp_REDRAW_OK |
+	     		  wimp_WTITLE |
+	     		  wimp_WNEW;
+
+  info_box.window.ex.x0 = info_box.window.box.x0 = 0;
+  info_box.window.ex.y0 = info_box.window.box.y0 = 0;
+  info_box.window.ex.x1 = info_box.window.box.x1 = 750;
+  info_box.window.ex.y1 = info_box.window.box.y1 = 300;
+
+  ic = 0;
+
+  info_box.icons[ic].box.x0 = 12;
+  info_box.icons[ic].box.y0 = 12+56;
+  info_box.icons[ic].box.x1 = info_box.icons[ic].box.x0 + 200;
+  info_box.icons[ic].box.y1 = info_box.icons[ic].box.y0 + 200;
+
+  info_box.icons[ic].flags = wimp_ISPRITE | wimp_IHCENTRE | wimp_IVCENTRE;
+
+  strcpy(info_box.icons[ic].data.sprite_name,"bd");
+
+  ic++;
+
+  for (l=0; l<5; l++) {
+    info_box.icons[ic].box.x0 = (l) ? 220:12;
+    info_box.icons[ic].box.y0 = 12 + (l*(48+8));
+    info_box.icons[ic].box.x1 = info_box.icons[ic].box.x0 + ((l)?120:60);
+    info_box.icons[ic].box.y1 = info_box.icons[ic].box.y0 + 48;
+
+    info_box.icons[ic].flags = wimp_ITEXT | wimp_INDIRECT |
+    			       wimp_IVCENTRE | wimp_IRJUST |
+    			       (wimp_IFORECOL*7);
+
+    info_box.icons[ic].data.indirecttext.buffer = info_text[l][0];
+    info_box.icons[ic].data.indirecttext.validstring = "";
+    info_box.icons[ic].data.indirecttext.bufflen = 16;
+
+    ic++;
+
+    info_box.icons[ic].box.x0 = (l) ? 350:80;
+    info_box.icons[ic].box.y0 = 12 + (l*(48+8));
+    info_box.icons[ic].box.x1 = 738;
+    info_box.icons[ic].box.y1 = info_box.icons[ic].box.y0 + 48;
+
+    info_box.icons[ic].flags = wimp_ITEXT | wimp_INDIRECT | wimp_IFILLED |
+    			     wimp_IHCENTRE | wimp_IVCENTRE |
+    			     wimp_IBORDER |
+    			     (wimp_IFORECOL*7) | (wimp_IBACKCOL*1);
+
+    info_box.icons[ic].data.indirecttext.buffer = info_text[l][1];
+    info_box.icons[ic].data.indirecttext.validstring = "R2";
+    info_box.icons[ic].data.indirecttext.bufflen = 64;
+
+    ic++;
+  }
+
+  info_box.window.nicons = ic;
+  info_box.handle = pwl_wimp_createwindow(&info_box.window);
+}
+
+void init_sdev_window(void)
+{
+  int ic, l;
+
+  /* Set window default values */
+  init_default_window(&sdev_win.window, "Marsquake serial link driver");
+
+  sdev_win.window.flags = wimp_WMOVEABLE |
+  	     		  wimp_REDRAW_OK |
+	     		  wimp_WTITLE |
+	     		  wimp_WQUIT |
+	     		  wimp_WBACK |
+	     		  wimp_WNEW;
+
+  sdev_win.window.box.x0 = sdev_win.window.ex.x0 = 0;
+  sdev_win.window.box.y0 = sdev_win.window.ex.y0 = 0;
+  sdev_win.window.box.x1 = sdev_win.window.ex.x1 = 640 + 80;
+  sdev_win.window.box.y1 = sdev_win.window.ex.y1 = 240 + 56;
+
+  ic = 0;
+
+  sdev_win.icons[ic].box.x0 = 12;
+  sdev_win.icons[ic].box.y0 = 12 + 56;
+  sdev_win.icons[ic].box.x1 = sdev_win.icons[ic].box.x0 + 16*10;
+  sdev_win.icons[ic].box.y1 = sdev_win.icons[ic].box.y0 + 48;
+  sdev_win.icons[ic].flags = wimp_ITEXT | wimp_IRJUST | (wimp_IFORECOL*7);
+  strcpy(sdev_win.icons[ic].data.text,"Baud Rate");
+
+  ic++;
+
+  sdev_win.icons[ic].box.x0 = 12;
+  sdev_win.icons[ic].box.y0 = sdev_win.icons[ic-1].box.y1 + 8;
+  sdev_win.icons[ic].box.x1 = sdev_win.icons[ic].box.x0 + 16*10;
+  sdev_win.icons[ic].box.y1 = sdev_win.icons[ic].box.y0 + 48;
+  sdev_win.icons[ic].flags = wimp_ITEXT | wimp_IRJUST | (wimp_IFORECOL*7);
+  strcpy(sdev_win.icons[ic].data.text,"Creator");
+
+  ic++;
+
+  sdev_win.icons[ic].box.x0 = 12;
+  sdev_win.icons[ic].box.y0 = sdev_win.icons[ic-1].box.y1 + 8;
+  sdev_win.icons[ic].box.x1 = sdev_win.icons[ic].box.x0 + 16*10;
+  sdev_win.icons[ic].box.y1 = sdev_win.icons[ic].box.y0 + 48;
+  sdev_win.icons[ic].flags = wimp_ITEXT | wimp_IRJUST | (wimp_IFORECOL*7);
+  strcpy(sdev_win.icons[ic].data.text,"Info");
+
+  ic++;
+
+  sdev_win.icons[ic].box.x0 = 12;
+  sdev_win.icons[ic].box.y0 = sdev_win.icons[ic-1].box.y1 + 8;
+  sdev_win.icons[ic].box.x1 = sdev_win.icons[ic].box.x0 + 16*10;
+  sdev_win.icons[ic].box.y1 = sdev_win.icons[ic].box.y0 + 48;
+  sdev_win.icons[ic].flags = wimp_ITEXT | wimp_IRJUST | (wimp_IFORECOL*7);
+  strcpy(sdev_win.icons[ic].data.text,"Driver");
+
+  ic++;
+
+  sdev_win.icons[ic].box.x0 = 24 + 16*10;
+  sdev_win.icons[ic].box.y0 = 12 + 56;
+  sdev_win.icons[ic].box.x1 = sdev_win.icons[ic].box.x0 + 16*8;
+  sdev_win.icons[ic].box.y1 = sdev_win.icons[ic].box.y0 + 48;
+  sdev_win.icons[ic].flags = wimp_ITEXT | wimp_IBORDER | wimp_IFILLED |
+  			     wimp_INDIRECT | (wimp_IFORECOL*7);
+  sdev_win.icons[ic].data.indirecttext.buffer = &sdev_win.curr_speed[0];
+  sdev_win.icons[ic].data.indirecttext.validstring = "R0";
+  sdev_win.icons[ic].data.indirecttext.bufflen = 12;
+
+  sdev_win.speed_ic = ic;
+  ic++;
+
+  sdev_win.icons[ic].box.x0 = 24 + 16*10;
+  sdev_win.icons[ic].box.y0 = sdev_win.icons[ic-1].box.y1 + 8;
+  sdev_win.icons[ic].box.x1 = sdev_win.window.ex.x1 - 12;
+  sdev_win.icons[ic].box.y1 = sdev_win.icons[ic].box.y0 + 48;
+  sdev_win.icons[ic].flags = wimp_ITEXT | wimp_IBORDER |
+  			     wimp_INDIRECT | (wimp_IFORECOL*7);
+  sdev_win.icons[ic].data.indirecttext.buffer= &sdev_win.curr_creator_inf[0];
+  sdev_win.icons[ic].data.indirecttext.validstring = "R2";
+  sdev_win.icons[ic].data.indirecttext.bufflen = 32;
+
+  ic++;
+
+  sdev_win.icons[ic].box.x0 = 24 + 16*10;
+  sdev_win.icons[ic].box.y0 = sdev_win.icons[ic-1].box.y1 + 8;
+  sdev_win.icons[ic].box.x1 = sdev_win.window.ex.x1 - 12;
+  sdev_win.icons[ic].box.y1 = sdev_win.icons[ic].box.y0 + 48;
+  sdev_win.icons[ic].flags = wimp_ITEXT | wimp_IBORDER |
+  			     wimp_INDIRECT | (wimp_IFORECOL*7);
+  sdev_win.icons[ic].data.indirecttext.buffer = &sdev_win.curr_driver_inf[0];
+  sdev_win.icons[ic].data.indirecttext.validstring = "R2";
+  sdev_win.icons[ic].data.indirecttext.bufflen = 32;
+
+  ic++;
+
+  sdev_win.icons[ic].box.x0 = 24 + 16*10;
+  sdev_win.icons[ic].box.y0 = sdev_win.icons[ic-1].box.y1 + 8;
+  sdev_win.icons[ic].box.x1 = sdev_win.window.ex.x1 - (12 + 52);
+  sdev_win.icons[ic].box.y1 = sdev_win.icons[ic].box.y0 + 48;
+  sdev_win.icons[ic].flags = wimp_ITEXT | wimp_IBORDER | wimp_IFILLED |
+  			     wimp_INDIRECT | (wimp_IFORECOL*7);
+  sdev_win.icons[ic].data.indirecttext.buffer = &sdev_win.curr_driver[0];
+  sdev_win.icons[ic].data.indirecttext.validstring = "R0";
+  sdev_win.icons[ic].data.indirecttext.bufflen = 12;
+
+  sdev_win.driver_ic = ic;
+  ic++;
+
+  sdev_win.icons[ic].box.x0 = sdev_win.icons[ic-1].box.x1 + 4;
+  sdev_win.icons[ic].box.y0 = sdev_win.icons[ic-1].box.y0;
+  sdev_win.icons[ic].box.x1 = sdev_win.window.ex.x1 - 12;
+  sdev_win.icons[ic].box.y1 = sdev_win.icons[ic].box.y0 + 48;
+  sdev_win.icons[ic].flags = wimp_ITEXT | wimp_ISPRITE | wimp_IHCENTRE |
+  			  wimp_IVCENTRE | wimp_INDIRECT | (wimp_IFORECOL*7) |
+  			  (wimp_IBTYPE * wimp_BCLICKAUTO);
+  sdev_win.icons[ic].data.indirecttext.buffer = "";
+  sdev_win.icons[ic].data.indirecttext.validstring = "R5;sgright,pgright";
+  sdev_win.icons[ic].data.indirecttext.bufflen = 12;
+
+  sdev_win.driver_pick_ic = ic;
+  ic++;
+
+  sdev_win.icons[ic].box.x0 = sdev_win.icons[sdev_win.speed_ic].box.x1 + 4;
+  sdev_win.icons[ic].box.y0 = sdev_win.icons[sdev_win.speed_ic].box.y0;
+  sdev_win.icons[ic].box.x1 = sdev_win.icons[ic].box.x0 + 48;
+  sdev_win.icons[ic].box.y1 = sdev_win.icons[ic].box.y0 + 48;
+  sdev_win.icons[ic].flags = wimp_ITEXT | wimp_ISPRITE | wimp_IHCENTRE |
+  			  wimp_IVCENTRE | wimp_INDIRECT | (wimp_IFORECOL*7) |
+  			  (wimp_IBTYPE * wimp_BCLICKAUTO);
+  sdev_win.icons[ic].data.indirecttext.buffer = "";
+  sdev_win.icons[ic].data.indirecttext.validstring = "R5;sgright,pgright";
+  sdev_win.icons[ic].data.indirecttext.bufflen = 12;
+
+  sdev_win.speed_pick_ic = ic;
+  ic++;
+
+  sdev_win.icons[ic].box.x0 = sdev_win.window.ex.x1 - (12 + 32);
+  sdev_win.icons[ic].box.y0 = 12 + 56;
+  sdev_win.icons[ic].box.x1 = sdev_win.icons[ic].box.x0 + 32;
+  sdev_win.icons[ic].box.y1 = sdev_win.icons[ic].box.y0 + 48;
+
+  sdev_win.icons[ic].flags = wimp_ITEXT | wimp_ISPRITE | wimp_IHCENTRE |
+  			       wimp_INDIRECT | wimp_IVCENTRE |
+  			       (wimp_IBTYPE * wimp_BCLICKAUTO);
+
+  sdev_win.icons[ic].data.indirecttext.buffer = "";
+  sdev_win.icons[ic].data.indirecttext.validstring = "R5;sright,pright";
+  sdev_win.icons[ic].data.indirecttext.bufflen = 1;
+  sdev_win.port_inc_ic = ic;
+
+  ic++;
+
+  sdev_win.icons[ic].box.x0 = sdev_win.icons[ic-1].box.x0 - (16*3 + 32 + 8);
+  sdev_win.icons[ic].box.y0 = 12 + 56;
+  sdev_win.icons[ic].box.x1 = sdev_win.icons[ic].box.x0 + 32;
+  sdev_win.icons[ic].box.y1 = sdev_win.icons[ic].box.y0 + 48;
+
+  sdev_win.icons[ic].flags = wimp_ITEXT | wimp_ISPRITE | wimp_IHCENTRE |
+  			       wimp_INDIRECT | wimp_IVCENTRE |
+  			       (wimp_IBTYPE * wimp_BCLICKAUTO);
+
+  sdev_win.icons[ic].data.indirecttext.buffer = "";
+  sdev_win.icons[ic].data.indirecttext.validstring = "R5;sleft,pleft";
+  sdev_win.icons[ic].data.indirecttext.bufflen = 1;
+  sdev_win.port_dec_ic = ic;
+
+  ic++;
+
+  sdev_win.icons[ic].box.x0 = sdev_win.icons[ic-1].box.x0 + 32 + 4;
+  sdev_win.icons[ic].box.y0 = 12 + 56;
+  sdev_win.icons[ic].box.x1 = sdev_win.icons[ic].box.x0 + (16*3);
+  sdev_win.icons[ic].box.y1 = sdev_win.icons[ic].box.y0 + 48;
+
+  sdev_win.icons[ic].flags =  wimp_ITEXT | wimp_IHCENTRE | wimp_IFILLED |
+           wimp_IVCENTRE | wimp_INDIRECT | (wimp_IFORECOL*7) | wimp_IBORDER;
+
+  sdev_win.icons[ic].data.indirecttext.buffer = sdev_win.curr_port;
+  sdev_win.icons[ic].data.indirecttext.validstring = "R0";
+  sdev_win.icons[ic].data.indirecttext.bufflen = 3;
+  sdev_win.port_num_ic = ic;
+
+  ic++;
+
+  sdev_win.icons[ic].box.x0 = sdev_win.icons[sdev_win.speed_pick_ic].box.x1+12;
+  sdev_win.icons[ic].box.y0 = 12 + 56;
+  sdev_win.icons[ic].box.x1 = sdev_win.icons[sdev_win.port_dec_ic].box.x0-12;
+  sdev_win.icons[ic].box.y1 = sdev_win.icons[ic].box.y0 + 48;
+  sdev_win.icons[ic].flags = wimp_ITEXT | wimp_IRJUST | (wimp_IFORECOL*7);
+  strcpy(sdev_win.icons[ic].data.text,"Port");
+
+  ic++;
+
+  sdev_win.icons[ic].box.x0 = 12;
+  sdev_win.icons[ic].box.y0 = 12;
+  sdev_win.icons[ic].box.x1 = sdev_win.window.ex.x1 - 12;
+  sdev_win.icons[ic].box.y1 = sdev_win.icons[ic].box.y0 + 48;
+
+  sdev_win.icons[ic].flags =  wimp_ITEXT | wimp_ISPRITE | wimp_IVCENTRE |
+  		  wimp_INDIRECT | (wimp_IBTYPE * wimp_BCLICKSEL) |
+  		  (wimp_IFORECOL*7) | (wimp_IBACKCOL*1);
+
+  sdev_win.icons[ic].data.indirecttext.buffer = "Disable vsync during multiplayer game";
+  sdev_win.icons[ic].data.indirecttext.validstring = "Soptoff,opton";
+  sdev_win.icons[ic].data.indirecttext.bufflen = 38;
+  sdev_win.vsync_ic = ic;
+
+  ic++;
+
+  strcpy(sdev_win.curr_driver_inf,drivers[sdev_curr_driver].info);
+  strcpy(sdev_win.curr_creator_inf,drivers[sdev_curr_driver].creator);
+  sprintf(sdev_win.curr_driver,"%s (v%d.%02d)",drivers[sdev_curr_driver].file,
+  	  			    	   drivers[sdev_curr_driver].vmajor,
+  	  			    	   drivers[sdev_curr_driver].vminor);
+  sprintf(sdev_win.curr_speed,"%d",sdev_speed[sdev_curr_speed_index]);
+  sprintf(sdev_win.curr_port,"%d",sdev_curr_port);
+
+  sdev_win.window.nicons = ic;
+  sdev_win.handle = pwl_wimp_createwindow(&sdev_win.window);
+
+  /* Window opening structure */
+  sdev_win.opener.w = sdev_win.handle;
+  sdev_win.opener.box.x0 = screen_size.x0 - (sdev_win.window.ex.x1>>1);
+  sdev_win.opener.box.y0 = screen_size.y0 - (sdev_win.window.ex.y1>>1);
+  sdev_win.opener.box.x1 = sdev_win.opener.box.x0 + sdev_win.window.ex.x1;
+  sdev_win.opener.box.y1 = sdev_win.opener.box.y0 + sdev_win.window.ex.y1;
+  sdev_win.opener.x = 0;
+  sdev_win.opener.y = 0;
+  sdev_win.opener.behind = -1;
+
+  /* By default, not open */
+  sdev_win.open = FALSE;
+}
+
+void select_new_port_number(int port)
+{
+  wimp_redrawstr redraw;
+
+  if (port<0) port=0;
+  if (port>sdev_highest_port) port = sdev_highest_port;
+
+  if (port == sdev_curr_port) return;
+
+  /* Shutdown old port */
+  (sdev_driver)(DRIVER_CLOSEDOWN,sdev_curr_port);
+
+  /* Init new port */
+  (sdev_driver)(DRIVER_INITIALISE,port);
+
+  sdev_curr_port = port;
+
+  sprintf(sdev_win.curr_port,"%d",sdev_curr_port);
+
+  redraw.w = sdev_win.handle;
+  redraw.box.x0 = sdev_win.icons[sdev_win.port_num_ic].box.x0;
+  redraw.box.y0 = sdev_win.icons[sdev_win.port_num_ic].box.y0;
+  redraw.box.x1 = sdev_win.icons[sdev_win.port_num_ic].box.x1;
+  redraw.box.y1 = sdev_win.icons[sdev_win.port_num_ic].box.y1;
+
+  pwl_wimp_forceredraw(&redraw);
+}
+
+void select_new_serial_speed(int index)
+{
+  wimp_redrawstr redraw;
+
+  sdev_curr_speed_index = index;
+  sprintf(sdev_win.curr_speed,"%d",sdev_speed[sdev_curr_speed_index]);
+
+  redraw.w = sdev_win.handle;
+  redraw.box.x0 = sdev_win.icons[sdev_win.speed_ic].box.x0;
+  redraw.box.y0 = sdev_win.icons[sdev_win.speed_ic].box.y0;
+  redraw.box.x1 = sdev_win.icons[sdev_win.speed_ic].box.x1;
+  redraw.box.y1 = sdev_win.icons[sdev_win.speed_ic].box.y1;
+
+  pwl_wimp_forceredraw(&redraw);
+}
+
+void select_new_serial_driver(int index)
+{
+  wimp_redrawstr redraw;
+
+  (sdev_driver)(DRIVER_CLOSEDOWN,sdev_curr_port);
+  driver_load(drivers[index].file);
+  sdev_curr_driver = index;
+
+  strcpy(sdev_win.curr_driver_inf,drivers[sdev_curr_driver].info);
+  strcpy(sdev_win.curr_creator_inf,drivers[sdev_curr_driver].creator);
+  sprintf(sdev_win.curr_driver,"%s (v%d.%02d)",drivers[sdev_curr_driver].file,
+  	  			    	   drivers[sdev_curr_driver].vmajor,
+  	  			    	   drivers[sdev_curr_driver].vminor);
+  sprintf(sdev_win.curr_speed,"%d",sdev_speed[sdev_curr_speed_index]);
+  sprintf(sdev_win.curr_port,"%d",sdev_curr_port);
+
+  redraw.w = sdev_win.handle;
+  redraw.box.x0 = 0;
+  redraw.box.y0 = 0;
+  redraw.box.x1 = sdev_win.window.ex.x1;
+  redraw.box.y1 = sdev_win.window.ex.x1;
+
+  pwl_wimp_forceredraw(&redraw);
+}
+
+void prep_serial_driver_menu(void)
+{
+  /* Prepare a menu to appear on middle button press */
+  int l, len, tlen;
+
+  set_menu_header(&sdev_menu.menu, "Driver");
+
+  len = 6;
+
+  for (l=0; l<sdev_driver_count; l++) {
+    sdev_menu.item[l].flags = (l == sdev_curr_driver) ? wimp_MTICK:0;
+    sdev_menu.item[l].submenu = (wimp_menuptr) -1;
+    sdev_menu.item[l].iconflags = wimp_ITEXT | wimp_IFILLED |
+    				 (wimp_IFORECOL*7);
+
+    strcpy(sdev_menu.item[l].data.text,drivers[l].file);
+
+    tlen = strlen(drivers[l].file);
+    if (tlen>len) len=tlen;
+  }
+
+  sdev_menu.item[l-1].flags |= wimp_MLAST;
+  sdev_menu.menu.hdr.width = 12+(len*16);
+  sdev_menu.items = l;
+}
+
+void prep_serial_speed_menu(void)
+{
+    /* Prepare a menu to appear on middle button press */
+  int l, len, tlen;
+
+  set_menu_header(&sdev_menu.menu, "Baud rate");
+
+  len = 6;
+
+  for (l=0; l<sdev_numofspeeds; l++) {
+    sdev_menu.item[l].flags = (l == sdev_curr_speed_index) ? wimp_MTICK:0;
+    sdev_menu.item[l].submenu = (wimp_menuptr) -1;
+    sdev_menu.item[l].iconflags = wimp_ITEXT | wimp_IFILLED |
+    				 (wimp_IFORECOL*7);
+
+    sprintf(sdev_menu.item[l].data.text,"%d",sdev_speed[l]);
+
+    tlen = strlen(sdev_menu.item[l].data.text);
+    if (tlen>len) len=tlen;
+  }
+
+  sdev_menu.item[l-1].flags |= wimp_MLAST;
+  sdev_menu.menu.hdr.width = 12+(len*16);
+  sdev_menu.items = l;
+}
+
+void init_msg_window(void)
+{
+  int ic, l;
+
+  /* Set window default values */
+  init_default_window(&msg_win.window, "Message from Marsquake");
+
+  msg_win.window.flags = wimp_REDRAW_OK |
+	     		   wimp_WTITLE |
+	     		   wimp_WNEW;
+
+  msg_win.window.ex.x0 = 0;
+  msg_win.window.ex.y0 = 0;
+  msg_win.window.ex.x1 = 810;
+  msg_win.window.ex.y1 = 252;
+
+  ic = 0;
+
+  msg_win.icons[ic].box.x0 = 128+12;
+  msg_win.icons[ic].box.y0 = 80;
+  msg_win.icons[ic].box.x1 = msg_win.icons[ic].box.x0 + 542;
+  msg_win.icons[ic].box.y1 = msg_win.icons[ic].box.y0 + 160;
+  msg_win.icons[ic].flags = wimp_ITEXT | wimp_IBORDER |
+  		  	      wimp_INDIRECT | (wimp_IFORECOL*7);
+  msg_win.icons[ic].data.indirecttext.buffer = "";
+  msg_win.icons[ic].data.indirecttext.validstring = "R4";
+  msg_win.icons[ic].data.indirecttext.bufflen = 1;
+
+  ic++;
+
+  for (l=0; l<4; l++) {
+    msg_win.icons[ic].box.x0 = 128+28;
+    msg_win.icons[ic].box.y0 = 96 + 32*l;
+    msg_win.icons[ic].box.x1 = msg_win.icons[ic].box.x0 + 510;
+    msg_win.icons[ic].box.y1 = msg_win.icons[ic].box.y0 + 32;
+
+    msg_win.icons[ic].flags = wimp_ITEXT | wimp_IHCENTRE |
+  		                wimp_INDIRECT | wimp_IVCENTRE |
+  		                (wimp_IFORECOL*7) | (wimp_IBACKCOL*1);
+
+    msg_win.icons[ic].data.indirecttext.buffer = &error_msg[l][0];
+    msg_win.icons[ic].data.indirecttext.validstring = (char *) -1;
+    msg_win.icons[ic].data.indirecttext.bufflen = 32;
+
+    ic++;
+
+    error_msg[l][0] = 0;
+  }
+
+  msg_win.icons[ic].box.x0 = 405-132;
+  msg_win.icons[ic].box.y0 = 12;
+  msg_win.icons[ic].box.x1 = msg_win.icons[ic].box.x0 + 264;
+  msg_win.icons[ic].box.y1 = msg_win.icons[ic].box.y0 + 64;
+  msg_win.icons[ic].flags = wimp_ITEXT | wimp_IBORDER | wimp_IFILLED |
+  			      wimp_IHCENTRE | wimp_IVCENTRE |
+  		  	      wimp_INDIRECT |
+  		  	      (wimp_IBTYPE * wimp_BCLICKDEBOUNCE) |
+  		  	      (wimp_IFORECOL*7) | (wimp_IBACKCOL*1);
+  msg_win.icons[ic].data.indirecttext.buffer = "Ok";
+  msg_win.icons[ic].data.indirecttext.validstring = "R6,3";
+  msg_win.icons[ic].data.indirecttext.bufflen = 16;
+
+  msg_win.opt = ic;
+
+  ic++;
+
+  for (l=0; l<2; l++) {
+    msg_win.icons[ic].box.x0 = (l<1) ? 0:682;
+    msg_win.icons[ic].box.y0 = 0;
+    msg_win.icons[ic].box.x1 = msg_win.icons[ic].box.x0 + 128;
+    msg_win.icons[ic].box.y1 = msg_win.icons[ic].box.y0 + 252;
+
+    msg_win.icons[ic].flags = wimp_ISPRITE | wimp_IHCENTRE | wimp_IVCENTRE;
+
+    strcpy(msg_win.icons[ic].data.sprite_name,"!marsquake");
+
+    ic++;
+  }
+
+  msg_win.window.nicons = ic;
+  msg_win.handle = pwl_wimp_createwindow(&msg_win.window);
+
+  /* Window opening structure */
+  msg_win.opener.w = msg_win.handle;
+  msg_win.opener.box.x0 = screen_size.x0 - (msg_win.window.ex.x1>>1);
+  msg_win.opener.box.y0 = screen_size.y0 - (msg_win.window.ex.y1>>1);
+  msg_win.opener.box.x1 = msg_win.opener.box.x0 + msg_win.window.ex.x1;
+  msg_win.opener.box.y1 = msg_win.opener.box.y0 + msg_win.window.ex.y1;
+  msg_win.opener.x = 0;
+  msg_win.opener.y = 0;
+  msg_win.opener.behind = -1;
+
+  /* By default, not open */
+  msg_win.open = FALSE;
+}
+
+void init_error_window(void)
+{
+  int ic, l;
+
+  /* Set window default values */
+  init_default_window(&error_win.window, "Warning from Marsquake");
+
+  error_win.window.flags = wimp_REDRAW_OK |
+	     		   wimp_WTITLE |
+	     		   wimp_WNEW;
+
+  error_win.window.ex.x0 = 0;
+  error_win.window.ex.y0 = 0;
+  error_win.window.ex.x1 = 810;
+  error_win.window.ex.y1 = 252;
+
+  ic = 0;
+
+  error_win.icons[ic].box.x0 = 128+12;
+  error_win.icons[ic].box.y0 = 80;
+  error_win.icons[ic].box.x1 = error_win.icons[ic].box.x0 + 542;
+  error_win.icons[ic].box.y1 = error_win.icons[ic].box.y0 + 160;
+  error_win.icons[ic].flags = wimp_ITEXT | wimp_IBORDER |
+  		  	      wimp_INDIRECT | (wimp_IFORECOL*7);
+  error_win.icons[ic].data.indirecttext.buffer = "";
+  error_win.icons[ic].data.indirecttext.validstring = "R4";
+  error_win.icons[ic].data.indirecttext.bufflen = 1;
+
+  ic++;
+
+  for (l=0; l<4; l++) {
+    error_win.icons[ic].box.x0 = 128+28;
+    error_win.icons[ic].box.y0 = 96 + 32*l;
+    error_win.icons[ic].box.x1 = error_win.icons[ic].box.x0 + 510;
+    error_win.icons[ic].box.y1 = error_win.icons[ic].box.y0 + 32;
+
+    error_win.icons[ic].flags = wimp_ITEXT | wimp_IHCENTRE |
+  		                wimp_INDIRECT | wimp_IVCENTRE |
+  		                (wimp_IFORECOL*7) | (wimp_IBACKCOL*1);
+
+    error_win.icons[ic].data.indirecttext.buffer = &error_msg[l][0];
+    error_win.icons[ic].data.indirecttext.validstring = (char *) -1;
+    error_win.icons[ic].data.indirecttext.bufflen = 32;
+
+    ic++;
+
+    strcpy(error_msg[l], "There has been some kind of err");
+  }
+
+  error_win.icons[ic].box.x0 = 128+12+8;
+  error_win.icons[ic].box.y0 = 12+8;
+  error_win.icons[ic].box.x1 = error_win.icons[ic].box.x0 + 263 - 16;
+  error_win.icons[ic].box.y1 = error_win.icons[ic].box.y0 + 64 - 16;
+  error_win.icons[ic].flags = wimp_ITEXT | wimp_IBORDER | wimp_IFILLED |
+  			      wimp_IHCENTRE | wimp_IVCENTRE |
+  		  	      wimp_INDIRECT |
+  		  	      (wimp_IBTYPE * wimp_BCLICKDEBOUNCE) |
+  		  	      (wimp_IFORECOL*7) | (wimp_IBACKCOL*1);
+  error_win.icons[ic].data.indirecttext.buffer = &other_opt[0];
+  error_win.icons[ic].data.indirecttext.validstring = "R5,3";
+  error_win.icons[ic].data.indirecttext.bufflen = 16;
+
+  error_win.other_opt = ic;
+
+  ic++;
+
+  error_win.icons[ic].box.x0 = 128+275+16;
+  error_win.icons[ic].box.y0 = 12;
+  error_win.icons[ic].box.x1 = error_win.icons[ic].box.x0 + 263;
+  error_win.icons[ic].box.y1 = error_win.icons[ic].box.y0 + 64;
+  error_win.icons[ic].flags = wimp_ITEXT | wimp_IBORDER | wimp_IFILLED |
+  			      wimp_IHCENTRE | wimp_IVCENTRE |
+  		  	      wimp_INDIRECT |
+  		  	      (wimp_IBTYPE * wimp_BCLICKDEBOUNCE) |
+  		  	      (wimp_IFORECOL*7) | (wimp_IBACKCOL*1);
+  error_win.icons[ic].data.indirecttext.buffer = &deflt_opt[0];
+  error_win.icons[ic].data.indirecttext.validstring = "R6,3";
+  error_win.icons[ic].data.indirecttext.bufflen = 16;
+
+  error_win.deflt_opt = ic;
+
+  ic++;
+
+  for (l=0; l<4; l++) {
+    error_win.icons[ic].box.x0 = (l<2) ? 0:682;
+    error_win.icons[ic].box.y0 = (l&1) ? 0:126;
+    error_win.icons[ic].box.x1 = error_win.icons[ic].box.x0 + 128;
+    error_win.icons[ic].box.y1 = error_win.icons[ic].box.y0 + 126;
+
+    error_win.icons[ic].flags = wimp_ISPRITE | wimp_IHCENTRE | wimp_IVCENTRE;
+
+    strcpy(error_win.icons[ic].data.sprite_name,(l&1)? "error":"!marsquake");
+
+    ic++;
+  }
+
+  error_win.window.nicons = ic;
+  error_win.handle = pwl_wimp_createwindow(&error_win.window);
+
+  /* Window opening structure */
+  error_win.opener.w = error_win.handle;
+  error_win.opener.box.x0 = screen_size.x0 - (error_win.window.ex.x1>>1);
+  error_win.opener.box.y0 = screen_size.y0 - (error_win.window.ex.y1>>1);
+  error_win.opener.box.x1 = error_win.opener.box.x0 + error_win.window.ex.x1;
+  error_win.opener.box.y1 = error_win.opener.box.y0 + error_win.window.ex.y1;
+  error_win.opener.x = 0;
+  error_win.opener.y = 0;
+  error_win.opener.behind = -1;
+
+  /* By default, not open */
+  error_win.open = FALSE;
+}
+
+void init_flash_window(void)
+{
+  int ic, l;
+
+  /* Set window default values */
+  init_default_window(&flash_win.window, "");
+
+  flash_win.window.flags = wimp_REDRAW_OK | wimp_WNEW;
+
+  flash_win.window.ex.x0 = 0;
+  flash_win.window.ex.y0 = 0;
+  flash_win.window.ex.x1 = 480;
+  flash_win.window.ex.y1 = 320;
+
+  ic = 0;
+
+  flash_win.icons[ic].box.x0 = 0;
+  flash_win.icons[ic].box.y0 = 0;
+  flash_win.icons[ic].box.x1 = flash_win.window.ex.x1;
+  flash_win.icons[ic].box.y1 = flash_win.window.ex.y1;
+  flash_win.icons[ic].flags = wimp_ITEXT | wimp_INDIRECT | wimp_IBORDER;
+  flash_win.icons[ic].data.indirecttext.buffer = "";
+  flash_win.icons[ic].data.indirecttext.validstring = "R3";
+  flash_win.icons[ic].data.indirecttext.bufflen = 1;
+
+  ic++;
+
+  flash_win.icons[ic].box.x0 = 0;
+  flash_win.icons[ic].box.y0 = 128;
+  flash_win.icons[ic].box.x1 = flash_win.window.ex.x1;
+  flash_win.icons[ic].box.y1 = flash_win.window.ex.y1 - 64;
+  flash_win.icons[ic].flags = wimp_ISPRITE | wimp_IHCENTRE | wimp_IVCENTRE;
+  strcpy(flash_win.icons[ic].data.sprite_name,"bd");
+
+  ic++;
+
+  flash_win.icons[ic].box.x0 = 0;
+  flash_win.icons[ic].box.y0 = 0;
+  flash_win.icons[ic].box.x1 = flash_win.window.ex.x1;
+  flash_win.icons[ic].box.y1 = 128;
+  flash_win.icons[ic].flags = wimp_ISPRITE | wimp_IHCENTRE | wimp_IVCENTRE;
+  strcpy(flash_win.icons[ic].data.sprite_name,"bdload");
+
+  ic++;
+
+  flash_win.window.nicons = ic;
+  flash_win.handle = pwl_wimp_createwindow(&flash_win.window);
+
+  /* Window opening structure */
+  flash_win.opener.w = flash_win.handle;
+  flash_win.opener.box.x0 = screen_size.x0 - (flash_win.window.ex.x1>>1);
+  flash_win.opener.box.y0 = screen_size.y0 - (flash_win.window.ex.y1>>1);
+  flash_win.opener.box.x1 = flash_win.opener.box.x0 + flash_win.window.ex.x1;
+  flash_win.opener.box.y1 = flash_win.opener.box.y0 + flash_win.window.ex.y1;
+  flash_win.opener.x = 0;
+  flash_win.opener.y = 0;
+  flash_win.opener.behind = -1;
+
+  /* By default, not open */
+  flash_win.open = FALSE;
+}
+
+void ask_user(char *err, char *default_opt, char *opt)
+{
+  /* Copy error message into 4 lines of 31 chars or less. */
+  int l, s, w, p;
+  char *tp;
+  BOOL eol = FALSE;
+  wimp_caretstr c;
+
+  l = s = p = 0;
+  do {
+    /* Length of next word */
+    tp = err+p;
+    w = 0;
+    do {
+      tp++;
+      w++;
+    } while (*tp && *tp!=' ' && *tp!='\n');
+
+    if (*tp=='\n') eol = TRUE;
+
+    if ((s+w) >= 31) {
+      /* Word will not fit on line - end current line */
+      error_msg[3-l][s] = 0;
+
+      /* Move to next line */
+      l++;
+      s=0;
+    }
+
+    /* More lines? */
+    if (l<4) {
+      /* Yes - copy this word */
+      if (s==0 && (*(err+p)==' ' || *(err+p)=='\n')) p++; /* skip space at start of line */
+
+      tp = err+p;
+      do {
+        error_msg[3-l][s] = *tp;
+        tp++;
+        p++;
+        s++;
+      } while (*tp && *tp!=' ' && *tp!='\n');
+    }
+
+    if (eol) {
+      /* Move to next line */
+      error_msg[3-l][s] = 0;
+
+      l++;
+      s=0;
+      eol=FALSE;
+    }
+  } while (*(err+p) && l<4);
+
+  if (l<4) {
+    error_msg[3-l][s] = 0;
+
+    while (++l < 4) {
+      error_msg[3-l][0] = 0;
+    }
+  }
+
+#ifndef NO_LOGFILE
+  for (l=0; l<4; l++) {
+    logfile(" l%d : '%s'\n",l,error_msg[l]);
+  }
+#endif
+
+  if (default_opt == NULL || opt == NULL) {
+    /* This is a message only */
+    msg_win.opener.box.x0 = screen_size.x0 - (msg_win.window.ex.x1>>1);
+    msg_win.opener.box.y0 = screen_size.y0 - (msg_win.window.ex.y1>>1);
+    msg_win.opener.box.x1 = msg_win.opener.box.x0 + msg_win.window.ex.x1;
+    msg_win.opener.box.y1 = msg_win.opener.box.y0 + msg_win.window.ex.y1;
+
+    confine_mouse(msg_win.opener.box.x0,msg_win.opener.box.x1,
+    		  msg_win.opener.box.y1,msg_win.opener.box.y0);
+
+    pwl_wimp_openwindow(&msg_win.opener);
+
+    c.w = msg_win.handle;
+    c.i = -1;
+    pwl_wimp_setcaretposition(&c);
+  }
+  else {
+    /* This is a warning */
+    strcpy(deflt_opt, default_opt);
+    strcpy(other_opt, opt);
+
+    error_win.opener.box.x0 = screen_size.x0 - (error_win.window.ex.x1>>1);
+    error_win.opener.box.y0 = screen_size.y0 - (error_win.window.ex.y1>>1);
+    error_win.opener.box.x1 = error_win.opener.box.x0+error_win.window.ex.x1;
+    error_win.opener.box.y1 = error_win.opener.box.y0+error_win.window.ex.y1;
+
+
+    confine_mouse(error_win.opener.box.x0,error_win.opener.box.x1,
+    		  error_win.opener.box.y1,error_win.opener.box.y0);
+
+    pwl_wimp_openwindow(&error_win.opener);
+
+    c.w = error_win.handle;
+    c.i = -1;
+    pwl_wimp_setcaretposition(&c);
+  }
+}
+
+char das_sn[] = "file_ffd";
+
+int main(int argc, char *argv[])
+{
+  wimp_eventstr e;
+  int v;
+  BOOL finished = FALSE;
+  BOOL polldone = FALSE;
+  BOOL sysshutdown = FALSE;
+  wimp_t shutdown_task;
+  struct {
+    wimp_caretstr c;
+    int		  chcode;
+  } quitblk;
+  dragasprite dragsprite;
+
+#ifndef NO_LOGFILE
+  open_logfile("<Mars$Dir>.log");
+
+  logfile("Logfile test message %d\n",1);
+#endif
+
+  /* Register us with the WIMP */
+  pwl_wimp_initialise(310,&this_task,"Marsquake Boom:Deluxe",recog_mess);
+
+  get_screen_size();
+
+  init_flash_window();
+  pwl_wimp_openwindow(&flash_win.opener);
+  pwl_wimp_poll(0,&e);
+
+  init_serial_drivers();
+
+  /* Prepare an icon */
+  our_icon.w = -1;          /* right of icon bar */
+  our_icon.i.box.x0 = 0;
+  our_icon.i.box.y0 = 0;
+  our_icon.i.box.x1 = 80;
+  our_icon.i.box.y1 = 68;
+  our_icon.i.flags = wimp_ISPRITE | (wimp_BCLICKDEBOUNCE * wimp_IBTYPE);
+  strcpy(our_icon.i.data.sprite_name,"!marsquake");
+  our_icon_handle = pwl_wimp_createicon(&our_icon);
+
+  /* Set up our windows */
+  init_error_window();
+  init_msg_window();
+  init_info_window();
+  init_sdev_window();
+
+  /* Prepare a menu to appear on middle button press */
+  set_menu_header(&icon_menu.menu, "Marsquake");
+  set_menu_item(&icon_menu.item[0], "Info", 0);
+  set_menu_item(&icon_menu.item[1], "Show help", 0);
+  set_menu_item(&icon_menu.item[2], "Serial link...", 0);
+  set_menu_item(&icon_menu.item[3], "Quit", wimp_MLAST);
+  icon_menu.menu.hdr.width = 12+(14*16);
+
+  /* Link icon menu to submenu */
+  icon_menu.item[0].submenu = (wimp_menuptr) info_box.handle;
+
+  curr_wimp_mode = pwl_getwimpmode();
+
+  cold_start();
+
+  pwl_wimp_closewindow(flash_win.handle);
+
+  do {
+    if (polldone) {
+      polldone = FALSE;
+    }
+    else {
+      v = pwl_wimp_poll(wimp_EMNULL,&e);
+    }
+
+#ifndef NO_LOGFILE
+    if (v!=2 && v!=wimp_EBUT) logfile("v = %d\n",v);
+#endif
+
+    switch (v) {
+      case wimp_ENULL :
+        /* null event */
+        break;
+
+      case wimp_EREDRAW :
+        break;
+
+      case wimp_EOPEN :
+        /* Reopen window due to size adjust, title bar select, etc. */
+        pwl_wimp_openwindow(&e.data.o);
+        break;
+
+      case wimp_ECLOSE :
+        /* We've been asked to close this window
+        ** (close icon has been clicked)
+        */
+        if (e.data.o.w == sdev_win.handle) sdev_win.open = FALSE;
+        pwl_wimp_closewindow(e.data.o.w);
+        break;
+
+      case wimp_EPTRLEAVE :
+        break;
+
+      case wimp_EPTRENTER :
+        break;
+
+      case wimp_EBUT :
+        /* mouse button change */
+        if (e.data.but.m.w == error_win.handle) {
+          /* Click within error report window */
+          if (e.data.but.m.bbits & MOUSE_SELECT) {
+            BOOL closewin = FALSE;
+
+            if (e.data.but.m.i == error_win.deflt_opt) {
+              /* Do default option */
+              /* switch (ask_user_state) {} */
+              closewin = TRUE;
+            }
+            else if (e.data.but.m.i == error_win.other_opt) {
+              /* Do other option */
+              /* switch (ask_user_state) {} */
+              closewin = TRUE;
+            }
+
+            if (closewin) {
+              /* Close error window */
+              pwl_wimp_closewindow(error_win.handle);
+              free_mouse();
+            }
+          }
+        }
+        else if (e.data.but.m.w == msg_win.handle) {
+          /* Click within message report window */
+          BOOL closewin = FALSE;
+
+          if ((e.data.but.m.bbits & MOUSE_SELECT) &&
+              e.data.but.m.i == msg_win.opt) {
+            /* Do option */
+            closewin = TRUE;
+          }
+
+          if (closewin) {
+            /* Close message window */
+            pwl_wimp_closewindow(msg_win.handle);
+            free_mouse();
+          }
+        }
+        else if (e.data.but.m.w == sdev_win.handle) {
+          if (e.data.but.m.i == sdev_win.vsync_ic) {
+            if (e.data.but.m.bbits && (MOUSE_SELECT|MOUSE_ADJUST)) {
+              battle_vsync = !battle_vsync;
+              logfile("Changed to sync %s\n",(battle_vsync)?"on":"off");
+            }
+          }
+          else if (e.data.but.m.i == sdev_win.speed_ic) {
+            if (e.data.but.m.bbits == MOUSE_MENU) {
+              /* Baud rate */
+              int y;
+
+              prep_serial_speed_menu();
+              y = (sdev_menu.items*sdev_menu.menu.hdr.height);
+              if (e.data.but.m.y > y) y=e.data.but.m.y;
+              pwl_wimp_createmenu((generic_menu *) &sdev_menu,
+                			 e.data.but.m.x-64,y);
+              curr_menu = SDEV_SPEED_MENU;
+            }
+          }
+          else if (e.data.but.m.i == sdev_win.driver_ic) {
+            if (e.data.but.m.bbits == MOUSE_MENU) {
+              /* Driver */
+              int y;
+
+              prep_serial_driver_menu();
+              y = (sdev_menu.items*sdev_menu.menu.hdr.height);
+              if (e.data.but.m.y > y) y=e.data.but.m.y;
+              pwl_wimp_createmenu((generic_menu *) &sdev_menu,
+                			 e.data.but.m.x-64,y);
+              curr_menu = SDEV_DEV_MENU;
+            }
+          }
+          else if (e.data.but.m.i == sdev_win.port_inc_ic) {
+            if (e.data.but.m.bbits & (MOUSE_SELECT|MOUSE_ADJUST)) {
+              select_new_port_number(sdev_curr_port+1);
+            }
+          }
+          else if (e.data.but.m.i == sdev_win.port_dec_ic) {
+            if (e.data.but.m.bbits & (MOUSE_SELECT|MOUSE_ADJUST)) {
+              select_new_port_number(sdev_curr_port-1);
+            }
+          }
+          else if (e.data.but.m.i == sdev_win.driver_pick_ic) {
+            if (e.data.but.m.bbits & (MOUSE_SELECT|MOUSE_ADJUST|MOUSE_MENU)){
+              /* Driver */
+              int x,y,y2;
+              wimp_openstr win;
+
+              /* Get position of window */
+              win.w = sdev_win.handle;
+              pwl_wimp_getwindowstate(&win);
+
+              prep_serial_driver_menu();
+              y = (sdev_menu.items*sdev_menu.menu.hdr.height);
+              x = win.box.x0 - win.x + sdev_win.icons[sdev_win.driver_pick_ic].box.x1;
+              y2 = win.box.y1 - win.y + sdev_win.icons[sdev_win.driver_pick_ic].box.y1;
+              if (y2 > y) y=y2;
+              pwl_wimp_createmenu((generic_menu *) &sdev_menu, x, y);
+              curr_menu = SDEV_DEV_MENU;
+            }
+          }
+          else if (e.data.but.m.i == sdev_win.speed_pick_ic) {
+            if (e.data.but.m.bbits & (MOUSE_SELECT|MOUSE_ADJUST|MOUSE_MENU)){
+              /* Baud rate */
+              int x,y,y2;
+              wimp_openstr win;
+
+              /* Get position of window */
+              win.w = sdev_win.handle;
+              pwl_wimp_getwindowstate(&win);
+
+              prep_serial_speed_menu();
+              y = (sdev_menu.items*sdev_menu.menu.hdr.height);
+              x = win.box.x0 - win.x + sdev_win.icons[sdev_win.speed_pick_ic].box.x1;
+              y2 = win.box.y1 - win.y + sdev_win.icons[sdev_win.speed_pick_ic].box.y1;
+              if (y2 > y) y=y2;
+              pwl_wimp_createmenu((generic_menu *) &sdev_menu, x, y);
+              curr_menu = SDEV_SPEED_MENU;
+            }
+          }
+        }
+        else if (e.data.but.m.i == our_icon_handle) {
+#ifndef NO_LOGFILE
+          logfile("Click recvd on our icon!\n");
+#endif
+
+          switch (e.data.but.m.bbits) {
+            case MOUSE_SELECT :
+              nobble_gameon();
+              kbd_claim();
+	      game_main();
+	      kbd_release();
+	      pwl_setwimpmode(curr_wimp_mode);
+              break;
+
+            case MOUSE_MENU :
+              pwl_wimp_createmenu((generic_menu *) &icon_menu,
+                			 e.data.but.m.x-64,
+                			 96 + (4*icon_menu.menu.hdr.height));
+              curr_menu = ICON_MENU;
+              break;
+
+            case MOUSE_ADJUST :
+              break;
+          }
+        }
+
+        break;
+
+      case wimp_EUSERDRAG :
+      	/* Drag is complete..! */
+        break;
+
+      case wimp_EKEY :
+#ifndef NO_LOGFILE
+        logfile("key : %x\n",e.data.key.chcode);
+#endif
+
+        if (e.data.key.c.w == error_win.handle) {
+          if (e.data.key.chcode == 13) {
+            /* Activate default action by emulating mouse click event */
+            v = wimp_EBUT;
+            e.data.but.m.w = error_win.handle;
+            e.data.but.m.bbits = MOUSE_SELECT;
+            e.data.but.m.i = error_win.deflt_opt;
+ 	    polldone = TRUE;
+ 	  }
+ 	}
+ 	else if (e.data.key.c.w == msg_win.handle) {
+ 	  if (e.data.key.chcode == 13) {
+            /* Activate default action by emulating mouse click event */
+            v = wimp_EBUT;
+            e.data.but.m.w = msg_win.handle;
+            e.data.but.m.bbits = MOUSE_SELECT;
+            e.data.but.m.i = msg_win.opt;
+ 	    polldone = TRUE;
+       	  }
+       	}
+
+        break;
+
+      case wimp_EMENU :
+      	/* Menu item has been selected! */
+      	switch (curr_menu) {
+      	  case ICON_MENU :
+            switch (e.data.menu[0]) {
+              case 0 : /* 'Info' */
+        	break;
+
+              case 1 : /* 'Show help' */
+                launch_help();
+                break;
+
+              case 2 : /* 'Serial device' */
+              	if (!sdev_win.open) {
+                  pwl_wimp_seticonstate(sdev_win.handle, sdev_win.vsync_ic,
+  			(!battle_vsync) ? wimp_ISELECTED:0, wimp_ISELECTED);
+                  pwl_wimp_openwindow(&sdev_win.opener);
+                  sdev_win.open = TRUE;
+                }
+
+        	break;
+
+              case 3 : /* 'Quit' */
+                finished = TRUE;
+        	break;
+            }
+
+            break;
+
+          case SDEV_SPEED_MENU :
+            select_new_serial_speed(e.data.menu[0]);
+            break;
+
+          case SDEV_DEV_MENU :
+            select_new_serial_driver(e.data.menu[0]);
+            break;
+        }
+
+        break;
+
+      case wimp_ESCROLL :
+        break;
+
+      case wimp_ELOSECARET :
+        break;
+
+      case wimp_EGAINCARET :
+        break;
+
+      case wimp_ESEND :
+        /* send message, don't worry if it doesn't arrive */
+#ifndef NO_LOGFILE
+        logfile("action = %d, from %x\n",e.data.msg.hdr.action,
+        		      	         e.data.msg.hdr.task);
+#endif
+
+        switch (e.data.msg.hdr.action) {
+	  case wimp_MCLOSEDOWN :
+	    /* Prequit has already been sent. Too late to complain. */
+            finished = TRUE;
+
+            break;
+
+          case wimp_MDATASAVE :
+            /* Someone is trying to send data to us! */
+#ifndef NO_LOGFILE
+            logfile("datasave req : %d bytes, type %x ['%s']\n",
+            	    e.data.msg.data.datasave.estsize,
+            	    e.data.msg.data.datasave.type,
+            	    e.data.msg.data.datasave.leaf);
+#endif
+
+            if (e.data.msg.data.datasave.type == 0xffd &&
+                e.data.msg.data.datasave.estsize < 40*1024) {
+
+  	      /* Attempt RAMTransmit */
+    	      e.data.msg.hdr.your_ref = e.data.msg.hdr.my_ref;
+    	      e.data.msg.hdr.action = wimp_MRAMFETCH;
+    	      e.data.msg.data.ramfetch.addr = io_buffer;
+    	      e.data.msg.data.ramfetch.nbytes = e.data.msg.data.datasave.estsize;
+    	      pwl_wimp_sendmessage(wimp_ESENDWANTACK,
+                			 &e.data.msg,
+                			 e.data.msg.hdr.task, 0);
+
+#ifndef NO_LOGFILE
+              logfile("Trying RAMFETCH...\n");
+#endif
+
+  	      /* Need an immediate answer */
+              v = pwl_wimp_poll(wimp_EMNULL,&e);
+              polldone = TRUE;
+
+              if (v != wimp_ESEND ||
+              	e.data.msg.hdr.action != wimp_MRAMTRANSMIT) {
+
+                /* Send DataSaveAck message */
+#ifndef NO_LOGFILE
+                logfile("RAMFETCH failed... trying DATASAVE\n");
+#endif
+                e.data.msg.hdr.your_ref = e.data.msg.hdr.my_ref;
+                e.data.msg.hdr.action = wimp_MDATASAVEOK;
+                strcpy(e.data.msg.data.datasaveok.name,"<Wimp$Scrap>");
+                pwl_wimp_sendmessage(wimp_ESENDWANTACK,
+                			 &e.data.msg,
+                			 e.data.msg.hdr.task, 0);
+              }
+            }
+
+            break;
+
+          case wimp_MDATASAVEOK :
+            /* We're trying to save something, and we've been given the
+            ** go-ahead.
+            */
+            break;
+
+          case wimp_MRAMFETCH :
+#ifndef NO_LOGFILE
+            logfile("rmftch:%x, %d\n",e.data.msg.data.ramfetch.addr,
+            	   e.data.msg.data.ramfetch.nbytes);
+#endif
+
+            break;
+
+          case wimp_MRAMTRANSMIT :
+#ifndef NO_LOGFILE
+            logfile("[*] Read %d bytes of data from sender\n",e.data.msg.data.ramtransmit.nbyteswritten);
+#endif
+            /*dump_data(io_buffer,e.data.msg.data.ramtransmit.nbyteswritten);*/
+            /*parse_io_buffer_as_sprites();*/
+            if (decode_new_format_level_from_mem((ubyte *) io_buffer)) {
+              /* Loaded! */
+              char tmp_mess[80];
+
+              sprintf(tmp_mess,"Successfully loaded\n%d single player level%s and\n%d multiplayer level%s",
+              	     user_1_plr_lev_count,
+              	     (user_1_plr_lev_count!=1) ? "s":"",
+              	     user_battle_lev_count,
+              	     (user_battle_lev_count!=1) ? "s":"");
+              ask_user(tmp_mess, NULL, NULL);
+            }
+            else {
+              /* Can't parse */
+              ask_user("Corrupt data or not a valid Marsquake level file",
+              	       NULL,NULL);
+            }
+
+            break;
+
+          case wimp_MPREQUIT :
+            break;
+
+          case wimp_MMODECHANGE :
+            get_screen_size();
+	    break;
+        }
+
+        break;
+
+      case wimp_ESENDWANTACK :
+        /* send message, return ack if not acknowledged */
+#ifndef NO_LOGFILE
+        logfile("[wants ack!] action = %d, from %x\n",e.data.msg.hdr.action,
+		        		      	      e.data.msg.hdr.task);
+#endif
+
+        switch (e.data.msg.hdr.action) {
+	  case wimp_MCLOSEDOWN :
+	    /* Prequit message will have already been issued, so we can't
+	    ** complain about it now.
+	    */
+            finished = TRUE;
+            break;
+
+          case wimp_MDATALOAD : {
+            /* WIMP wants us to load something */
+            int l;
+            BOOL accept;
+
+	    accept = FALSE;
+
+	    if (e.data.msg.data.dataload.type == 0xffd /* Data */) {
+	      accept = TRUE;
+	    }
+
+	    if (e.data.msg.data.dataload.size > 40*1024) {
+	      accept = FALSE;
+	      ask_user("File too large for Marsquake",NULL,NULL);
+	    }
+
+	    if (accept) {
+              if (e.data.msg.hdr.your_ref == 0) {
+                /* It's a request from the filer to load something! */
+                l = load_file_into_buffer(e.data.msg.data.dataload.name,
+                	  			io_buffer, 32*1024);
+              }
+              else {
+                /* External app has saved data to scrap file for us */
+
+                /* First, load it and delete it */
+                l = load_scrap(io_buffer, 32*1024);
+              }
+
+#ifndef NO_LOGFILE
+              logfile("Read %d bytes of data from sender\n",l);
+#endif
+
+              if (decode_new_format_level_from_mem((ubyte *) io_buffer)) {
+                /* Loaded! */
+                char tmp_mess[80];
+
+                sprintf(tmp_mess,"Successfully loaded\n%d single player level%s and\n%d multiplayer level%s",
+              	     user_1_plr_lev_count,
+              	     (user_1_plr_lev_count!=1) ? "s":"",
+              	     user_battle_lev_count,
+              	     (user_battle_lev_count!=1) ? "s":"");
+                ask_user(tmp_mess, NULL, NULL);
+              }
+              else {
+                /* Can't parse */
+                ask_user("Corrupt data or not a valid Marsquake level file",
+                	       NULL,NULL);
+              }
+              /* parse_io_buffer_as_level(); */
+
+              /* Now tell external app that we've loaded it */
+              e.data.msg.hdr.your_ref = e.data.msg.hdr.my_ref;
+              e.data.msg.hdr.action = wimp_MDATALOADOK;
+              pwl_wimp_sendmessage(wimp_ESEND,
+              			 &e.data.msg,
+              			 e.data.msg.hdr.task, 0);
+#ifndef NO_LOGFILE
+              logfile("replied again\n");
+#endif
+            }
+
+            break;
+          }
+
+          case wimp_MRAMFETCH :
+            /* We're trying to save something, and we've been given the
+            ** go-ahead.
+            */
+            break;
+
+          case wimp_MRAMTRANSMIT :
+#ifndef NO_LOGFILE
+            logfile("Read %d bytes of data from sender\n",e.data.msg.data.ramtransmit.nbyteswritten);
+#endif
+            /*dump_data(io_buffer,e.data.msg.data.ramtransmit.nbyteswritten);*/
+            /*parse_io_buffer_as_sprites();*/
+            break;
+
+          case wimp_MPREQUIT :
+            /* Check for unsaved files? (See 3-231 for how to object) */
+            break;
+        }
+
+        break;
+
+      case wimp_EACK :
+        /* acknowledge receipt of message. */
+#ifndef NO_LOGFILE
+        logfile("[ack only!] action = %d, from %x\n",e.data.msg.hdr.action,
+		        		      	      e.data.msg.hdr.task);
+#endif
+        break;
+    }
+  } while (!finished);
+
+  shutdown_permanent();
+
+  /* Tell the WIMP we're off */
+  pwl_wimp_closedown(&this_task);
+
+  return 0;
+}
+
+/***************************************************************************/
+

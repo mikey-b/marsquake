@@ -1,0 +1,100 @@
+/***************************************************************************
+** Marsquake [Digital Symphony] audio interface routines
+*/
+
+#include "mqhead.h"
+
+typedef struct {
+  ubyte	channel_num;
+  ubyte note;
+  ubyte sample;
+  ubyte pad;
+} sound_effect;
+
+sound_effect sfx_table_with_mus[] = {
+  3,17,12, 0,  /* 00 Cough 2 */
+  3,15, 1, 0,  /* 01 Menu movement */
+  3,25, 2, 0,  /* 02 Menu item open */
+  2,15, 3, 0,  /* 03 Explosion */
+  3,20, 4, 0,  /* 04 Enemy death */
+  3,25, 5, 0,  /* 05 Menu select/alter */
+  3,15, 6, 0,  /* 06 Player death */
+  3,15, 7, 0,  /* 07 Bomb bounce */
+  3,15, 8, 0,  /* 08 Bomb drop */
+  3,15, 9, 0,  /* 09 Player crush */
+  3,15,10, 0,  /* 10 Player throw */
+  3,14,11, 0,  /* 11 Bonus collect */
+  3,30, 2, 0,  /* 12 Character display beep */
+  3,20, 2, 0,  /* 13 Menu item closed */
+  3,18,12, 0,  /* 14 Cough */
+  3, 5,13, 0,  /* 15 Exit open */
+  2,15,14, 0,  /* 16 Explosion */
+  2,15,15, 0,  /* 17 Explosion */
+  2,15,17, 0,  /* 18 Explosion */
+  3,15,21, 0,  /* 19 Player death */
+  3,15,24, 0,  /* 20 Player death */
+  3,15,25, 0   /* 21 Player death */
+};
+
+sound_effect sfx_table_no_mus[] = {
+  3,15,12, 0,  /* 00 Cough 2 */
+  3,15, 1, 0,  /* 01 Menu movement */
+  3,25, 2, 0,  /* 02 Menu item open */
+  2,15, 3, 0,  /* 03 Explosion */
+  0,20, 4, 0,  /* 04 Enemy death */
+  3,25, 5, 0,  /* 05 Menu select/alter */
+  0,15, 6, 0,  /* 06 Player death */
+  0,15, 7, 0,  /* 07 Bomb bounce */
+  0,15, 8, 0,  /* 08 Bomb drop */
+  1,15, 9, 0,  /* 09 Player crush */
+  0,15,10, 0,  /* 10 Player throw */
+  3,14,11, 0,  /* 11 Bonus collect */
+  3,30, 2, 0,  /* 12 Character display beep */
+  3,20, 2, 0,  /* 13 Menu item closed */
+  3,16,12, 0,  /* 14 Cough */
+  3, 5,13, 0,  /* 15 Exit open */
+  2,15,14, 0,  /* 16 Explosion */
+  1,15,15, 0,  /* 17 Explosion */
+  1,15,17, 0,  /* 18 Explosion */
+  0,15,21, 0,  /* 19 Player death */
+  3,15,24, 0,  /* 20 Player death */
+  3,15,25, 0   /* 21 Player death */
+};
+
+int global_volume;
+
+
+void load_audio_data(void)
+{
+  /* Attempts to load DSym file, which contains music and sound effects */
+  int error;
+
+  /* Default volume is 63 (out of 0..63) */
+  global_volume = 63;
+
+  /* Attempt load */
+  error = dsym_load("<Mars$Dir>.Audio.music");
+
+  /* Read default stereo positions */
+  dsym_get_stereo_positions();
+
+  /* Was there a problem? */
+  if (error) {
+#ifndef NO_PRINTF
+    printf("Problem occurred during DSym load\n");
+#endif
+    exit(0);
+  }
+  else {
+#ifndef NO_PRINTF
+    printf("DSym load was successful\n");
+#endif
+  }
+}
+
+void play_sound(int sound_num)
+{
+  /* Play specified instrument */
+  dsym_playinstr(sound_num);
+}
+

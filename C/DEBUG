@@ -1,0 +1,46 @@
+#include <stdio.h>
+#include <string.h>
+#include <stdarg.h>
+
+#define NO_LOGFILE
+
+static FILE *lf;
+static int lf_avail;
+static char lf_name[64];
+
+void open_logfile(char *filename)
+{
+#ifndef NO_LOGFILE
+  strcpy(lf_name, filename);
+
+  lf = fopen(lf_name, "w");
+
+  if (!lf) lf_avail = 0;
+  else {
+    fclose(lf);
+    lf_avail = 1;
+  }
+#endif
+}
+
+void logfile(const char *FormatString, ...)
+{
+#ifndef NO_LOGFILE
+  char 	   ErrorBuffer[256];
+  va_list  arglist;
+
+  if (!lf_avail) return;
+
+  va_start(arglist, FormatString);
+  vsprintf(ErrorBuffer, FormatString, arglist);
+  va_end(arglist);
+
+  lf = fopen(lf_name, "a");
+
+  if (lf) {
+    fprintf(lf, "%s", ErrorBuffer);
+    fclose(lf);
+  }
+#endif
+}
+

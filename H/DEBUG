@@ -1,0 +1,2 @@
+void open_logfile(char *filename);
+void logfile(const char *FormatString, ...);

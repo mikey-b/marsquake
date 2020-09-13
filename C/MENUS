@@ -1,0 +1,3838 @@
+/***************************************************************************
+** Marsquake front end menus
+*/
+
+#include "mqhead.h"
+#include "debug.h"
+#include "pakfs.h"
+
+BOOL decode_new_format_level(PFILE *fp, BOOL user);
+void revive_user_levels(void);
+void setup_pipe_connections(ED_LEVEL *lev);
+
+void demo_menu(void)
+{
+  int m, r, safe;
+  char timedate[64];
+
+  /* Store old fast menu value : we want to force fast menus, but
+  ** restore the old status later
+  */
+  safe = fast_menu;
+  fast_menu = 0;
+
+  scrblanker_off();
+
+  play_intro_sequence();
+
+  /* Initialise menu */
+  ready_for_new_menu();
+
+#if 0
+  m=0;
+  do {
+    if (dem_msg[m][0]) {
+      r = add_new_menu_item(dem_msg[m],0,80+22*m,CENTRE+((m+1)&7));
+
+      if (m==4) highlighted_item(r); /* highlight this one */
+    }
+
+    m++;
+  } while (dem_msg[m]!=NULL);
+
+  sprintf(timedate,"Vers : %s, %s",__TIME__,__DATE__);
+
+  add_new_menu_item(msg[(mode49_avail) ? 135:134],0,200,CENTRE+CYAN);
+  add_new_menu_item(msg[(joy_available) ? 112:113],0,216,CENTRE+CYAN);
+
+  add_new_menu_item(timedate,0,234,CENTRE+CYAN);
+#else
+#if 1
+  /*add_new_menu_item((char*)24,84,80,LEFT_ALIGN+ICON);*/
+  add_new_menu_item("shareware edition",0,90,CENTRE+RED);
+
+  if (screenres != MODE_49) {
+    add_new_menu_item(msg[(mode49_avail) ? 135:134],0,170,CENTRE+BLUE);
+  }
+  add_new_menu_item(msg[(joy_available) ? 112:113],0,190,CENTRE+BLUE);
+
+  highlighted_item(add_new_menu_item("PRESS RETURN TO CONTINUE",0,234,CENTRE));
+  add_new_menu_item("(C) 1998 PAUL TAYLOR",0,210,CENTRE+CYAN);
+#endif
+#endif
+
+#if 1
+  open_menu();
+
+  do {
+    /* Read inputs and move things */
+    read_menu_joy();
+
+    /* Draw things */
+    draw_menu_screen();
+
+    maintain_menu();
+
+    /* Display things */
+    swapscreen();
+  } while (!(menu_joy_data&FIRE1));
+
+  MENU_SEL_SFX;
+
+  close_menu();
+#endif
+
+  /* A bit late for this menu, but I'm not bitter */
+  dsym_set_stereo_for_menus();
+
+  /* Restore old fast menu status */
+  fast_menu = safe;
+}
+
+void main_menu()
+{
+  char opts[] = { 0,1,2,3,120,4,50 };
+  char opt_id[6];
+  int choice, opt, finished;
+  int timer;
+  ubyte key, oldkey;
+  int passpos;
+
+  finished = 0;
+
+  do {
+    choice=5;
+
+    timer = 500;
+
+    ready_for_new_menu();
+
+#ifdef ALLOW_EDITOR
+    for (opt=0; opt<7; opt++) {
+#else
+    for (opt=0; opt<6; opt++) {
+#endif
+      opt_id[opt] = add_new_menu_item(msg[opts[opt]],0,
+       		  		    ((opt==0) ? 80:90)+22*opt,CENTRE+CYAN);
+    }
+
+    highlighted_item(opt_id[choice]);
+
+    open_menu();
+
+    passpos = oldkey = 0;
+
+    do {
+       /* Cheat mode detect */
+       key = scan_keyboard();
+       if (key!=0xff) key = keycode[key];
+       else key = 0;
+
+       if (key != oldkey) {
+         if (key) {
+           if ((key+42)==secret_password[passpos]) passpos++;
+           else passpos = 0;
+
+           if (secret_password[passpos] == 0) {
+             /* Entered whole password */
+             int f;
+
+             cheat_mode = !cheat_mode;
+             MENU_SEL_SFX;
+
+             for (f=0; f<3; f++) {
+               draw_menu_screen();
+	       swapscreen();
+	     }
+           }
+
+           timer = 300;
+         }
+
+         oldkey = key;
+       }
+       /* End of cheat mode detect */
+
+       read_menu_joy();
+
+       old_menu_choice = choice;
+
+       if (menu_joy_data & UP) choice--;
+       if (menu_joy_data & DOWN) choice++;
+
+#ifdef ALLOW_EDITOR
+       if (choice>6) choice=1;
+       if (choice<1) choice=6;
+#else
+       if (choice>5) choice=1;
+       if (choice<1) choice=5;
+#endif
+
+       if (choice!=old_menu_choice) MENU_MOV_SFX;
+
+       highlighted_item(opt_id[choice]);
+
+       draw_menu_screen();
+
+       maintain_menu();
+
+       swapscreen();
+
+       if (menu_joy_data) {
+         timer = 300;
+       }
+       else {
+         timer--;
+       }
+    } while (!(menu_joy_data & FIRE1) && timer);
+
+    if (timer==0) {
+      close_menu();
+      display_high_scores(1);
+    }
+    else {
+      MENU_SEL_SFX;
+
+      if (choice==5)
+        close_menu_completely(1);
+      else
+        close_menu();
+
+      switch(choice) {
+        case 1 : /* 1 player game selected */
+        	   single_player_game();
+        	   break;
+
+        case 2 : /* Multiplayer battle mode */
+        	   battle_game();
+        	   break;
+
+        case 3 : /* Instructions screen */
+        	   help_menu();
+        	   break;
+
+        case 4 : /* General options */
+                   options_menu(0);
+                   break;
+
+        case 5 :
+        	   finished = 1;
+        	   break;
+
+        case 6 : /* Jump to editor */
+        	   editor();
+        	   break;
+      }
+    }
+  } while (!finished);
+}
+
+void options_menu(int in_game)
+{
+  ubyte opts[] = { 121, 122, 123, 127, 133, 136, 14 };
+  ubyte	opt_id[7];
+  ubyte choice, opt;
+
+  /* Exit option is 'return to game' or 'return to main menu' */
+  opts[6] = (in_game) ? 131:14;
+
+  /* Set up screen mode option */
+  if (screenres == MODE_13) {
+    msg[133][14] = '1';
+    msg[133][15] = '3';
+  }
+  else {
+    msg[133][14] = '4';
+    msg[133][15] = '9';
+  }
+
+  /* Set up options */
+  for (opt=0; opt<7; opt++) {
+    opt_id[opt] = add_new_menu_item(msg[opts[opt]],0,90+opt*22,CENTRE+CYAN);
+  }
+
+  add_new_menu_item(msg[126],0,60,CENTRE+CYAN);
+
+  /* menu music */
+  strcpy(&msg[121][13],
+  	 msg[(global_audio_stat & MENU_MUS_ENABLED) ? 124:125]);
+
+  /* game music */
+  strcpy(&msg[122][13],
+  	 msg[(global_audio_stat & GAME_MUS_ENABLED) ? 124:125]);
+
+  /* sfx */
+  strcpy(&msg[123][16],
+  	 msg[(global_audio_stat & SOUND_FX_ENABLED) ? 124:125]);
+
+  /* fast menus */
+  strcpy(&msg[136][13],msg[(fast_menu) ? 124:125]);
+
+  /* fuse length */
+  strcpy(&msg[127][13],msg[fuse_length_index+128]);
+
+  choice = 6;
+  highlighted_item(opt_id[5]);
+
+  do {
+    read_menu_joy();
+
+    old_menu_choice = choice;
+
+    if (menu_joy_data & UP) {
+      choice--;
+      if (choice == 255) choice = 6;
+    }
+
+    if (menu_joy_data & DOWN) {
+      choice++;
+      if (choice > 6) choice = 0;
+    }
+
+    if (choice!=old_menu_choice) MENU_MOV_SFX;
+
+    switch (choice) {
+      case 0 : /* Menu music */
+      	if (menu_joy_data & (LEFT|RIGHT|FIRE1)) {
+      	  global_audio_stat ^= MENU_MUS_ENABLED;
+          strcpy(&msg[121][13],
+          	 msg[(global_audio_stat & MENU_MUS_ENABLED) ? 124:125]);
+          MENU_ALT_SFX;
+
+	  if (!in_game) {
+            if (global_audio_stat & MENU_MUS_ENABLED) {
+              dsym_start_song_warm(MENU_TUNE);
+            }
+            else {
+              dsym_stop_song();
+            }
+          }
+        }
+        break;
+
+      case 1 : /* game music */
+      	if (menu_joy_data & (LEFT|RIGHT|FIRE1)) {
+          global_audio_stat ^= GAME_MUS_ENABLED;
+          strcpy(&msg[122][13],
+          	 msg[(global_audio_stat & GAME_MUS_ENABLED) ? 124:125]);
+          MENU_ALT_SFX;
+
+	  if (in_game) {
+            if (global_audio_stat & GAME_MUS_ENABLED) {
+              dsym_start_song_warm(GAME_TUNE_1);
+            }
+            else {
+              dsym_stop_song();
+            }
+          }
+        }
+        break;
+
+      case 2 : /* sfx */
+      	if (menu_joy_data & (LEFT|RIGHT|FIRE1)) {
+          global_audio_stat ^= SOUND_FX_ENABLED;
+          strcpy(&msg[123][16],
+          	 msg[(global_audio_stat & SOUND_FX_ENABLED) ? 124:125]);
+          MENU_ALT_SFX;
+        }
+        break;
+
+      case 3 : /* fuse length */
+        if (menu_joy_data & (RIGHT|FIRE1)) {
+          fuse_length_index++;
+          if (fuse_length_index>2) fuse_length_index = 0;
+          strcpy(&msg[127][13],msg[fuse_length_index+128]);
+          MENU_ALT_SFX;
+        }
+
+        if (menu_joy_data & LEFT) {
+          if (fuse_length_index==0) fuse_length_index = 2;
+          else fuse_length_index--;
+          strcpy(&msg[127][13],msg[fuse_length_index+128]);
+          MENU_ALT_SFX;
+        }
+
+        break;
+
+      case 4 : /* Screen resolution */
+        if ((menu_joy_data & (LEFT|RIGHT|FIRE1)) && mode49_avail) {
+          change_mode((screenres==MODE_13) ? MODE_49:MODE_13);
+
+          if (screenres == MODE_13) {
+            msg[133][14] = '1';
+            msg[133][15] = '3';
+          }
+          else {
+            msg[133][14] = '4';
+            msg[133][15] = '9';
+          }
+
+          MENU_ALT_SFX;
+        }
+
+        break;
+
+      case 5 : /* Fast menus */
+      	if (menu_joy_data & (LEFT|RIGHT|FIRE1)) {
+      	  fast_menu ^= 1;
+	  strcpy(&msg[136][13],msg[(fast_menu) ? 124:125]);
+
+	  MENU_ALT_SFX;
+        }
+
+      	break;
+    }
+
+    highlighted_item(opt_id[choice]);
+
+    draw_menu_screen();
+
+    maintain_menu();
+
+    swapscreen();
+  } while (!((menu_joy_data & FIRE1) && choice==6));
+
+  MENU_SEL_SFX;
+
+  if (!in_game) close_menu();
+  else close_menu_completely(0);
+
+  fuse_length = fuse_lengths[fuse_length_index];
+}
+
+ubyte spjump = 0;
+BOOL sgl_userlevs = FALSE;
+void single_player_game()
+{
+  ubyte opts[] = { 12,13,30,14 };
+  ubyte opt_id[4];
+  ubyte opt, choice, finished;
+  ubyte safetype[4];
+  ubyte p;
+
+  game_level = spjump&7;
+  game_sector = spjump>>3;
+
+  /* If user level, make sure it still exists */
+  if (sgl_userlevs) {
+    if (game_level >= user_1_plr_lev_count) {
+      /* Reset */
+      spjump = 0;
+      sgl_userlevs = FALSE;
+    }
+  }
+
+  /* We'll need this later */
+  global_plrcount = 1;
+
+  finished = 0;
+
+  /* Save current player types and set new player types */
+  for (p=0; p<4; p++) {
+    safetype[p] = plr_type[p];
+    plr_type[p] = (p==0) ? PLR_HUMAN:PLR_SLEEPING;
+  }
+
+  if (sgl_userlevs) {
+    if (spjump<9) {
+      msg[154][19] = '1' + spjump;
+      msg[154][20] = 0;
+    }
+    else {
+      msg[154][19] = '1';
+      msg[154][20] = '0' + (spjump-9);
+    }
+  }
+
+  msg[13][19] = '1'+(max_jump_level>>3);
+  msg[13][21] = '1'+(max_jump_level&7);
+  msg[13][14] = '1';
+  msg[13][16] = '1';
+
+  msg[13][14] = '1'+(spjump>>3);
+  msg[13][16] = '1'+(spjump&7);
+
+  opts[1] = (sgl_userlevs) ? 154:13;
+
+  do {
+    ready_for_new_menu();
+
+    add_new_menu_item(msg[10],0,80,CENTRE+CYAN);
+
+    for (opt=0; opt<4; opt++) {
+      opt_id[opt] =
+         add_new_menu_item(msg[opts[opt]],
+         		   0,110+opt*22,CENTRE+CYAN);
+    }
+
+    add_new_menu_item((char *)ctrl_word_type[players[0].ctrl_word],
+    		      10,60,ICON+CYAN);
+
+    choice = 3;
+
+    highlighted_item(opt_id[choice]);
+
+    open_menu();
+
+    do {
+      read_menu_joy();
+
+      old_menu_choice = choice;
+
+      if (menu_joy_data & UP) {
+        choice--;
+        /*if (choice==1 && max_jump_level==0) choice=0;*/
+      }
+      if (menu_joy_data & DOWN) {
+        choice++;
+        /*if (choice==1 && max_jump_level==0) choice=2;*/
+      }
+
+      if (choice==1) {
+        BOOL change;
+
+        change = FALSE;
+
+        if (sgl_userlevs) {
+          if (menu_joy_data & LEFT) {
+            if (spjump == 0) {
+              spjump = max_jump_level;
+              change = TRUE;
+            }
+            else spjump--;
+          }
+
+          if (menu_joy_data & RIGHT) {
+            spjump++;
+            if (spjump >= user_1_plr_lev_count) {
+              spjump = 0;
+              change = TRUE;
+            }
+          }
+
+          if (spjump<9) {
+            msg[154][19] = '1' + spjump;
+            msg[154][20] = 0;
+          }
+          else {
+            msg[154][19] = '1';
+            msg[154][20] = '0' + (spjump-9);
+          }
+
+          if (change) {
+            /* Return to standard levels */
+            msg[13][14] = '1'+(spjump>>3);
+    	    msg[13][16] = '1'+(spjump&7);
+
+    	    change_item_text_ptr(opt_id[1],msg[13]);
+
+    	    sgl_userlevs = FALSE;
+    	  }
+        }
+        else {
+          if (menu_joy_data & LEFT) {
+            if (spjump) {
+              spjump--;
+              MENU_SEL_SFX;
+            }
+            else {
+              if (user_1_plr_lev_count) {
+                spjump = user_1_plr_lev_count-1;
+                change = TRUE;
+              }
+              else {
+                spjump = max_jump_level;
+              }
+            }
+          }
+
+          if (menu_joy_data & RIGHT) {
+            if (spjump<max_jump_level) {
+              spjump++;
+              MENU_SEL_SFX;
+            }
+            else {
+              if (user_1_plr_lev_count) {
+                spjump = 0;
+                change = TRUE;
+              }
+              else {
+                spjump = 0;
+              }
+            }
+          }
+
+          msg[13][14] = '1'+(spjump>>3);
+    	  msg[13][16] = '1'+(spjump&7);
+
+    	  if (change) {
+            /* Change to user levels */
+            if (spjump<9) {
+              msg[154][19] = '1' + spjump;
+              msg[154][20] = 0;
+            }
+            else {
+              msg[154][19] = '1';
+              msg[154][20] = '0' + (spjump-9);
+            }
+
+    	    change_item_text_ptr(opt_id[1],msg[154]);
+
+    	    sgl_userlevs = TRUE;
+    	  }
+    	}
+      }
+
+      if (choice==255) choice=3;
+      if (choice>3) choice=0;
+
+      if (choice!=old_menu_choice) MENU_MOV_SFX;
+
+      highlighted_item(opt_id[choice]);
+
+      draw_menu_screen();
+
+      maintain_menu();
+
+      swapscreen();
+    } while (!(menu_joy_data & FIRE1));
+
+    MENU_SEL_SFX;
+
+    close_menu();
+
+    switch (choice) {
+      case 0 :
+        /* I want to start a new game */
+        game_level = 0;
+        game_sector = 0;
+        finished = begin_new_game(1,0,SINGLE_PLAYER);
+        break;
+
+      case 1 :
+        /* I want to jump to a previously reached level */
+        if (sgl_userlevs) {
+          user_1_plr_curr_lev = user_1_plr_lev[spjump];
+          game_level = spjump;
+          game_sector = EPIS_USER;
+        }
+        else {
+          game_level = spjump&7;
+          game_sector = spjump>>3;
+        }
+        finished = begin_new_game(1,0,SINGLE_PLAYER);
+        break;
+
+      case 2 :
+      	/* I want to change my control method */
+     	choose_control_method(0);
+      	break;
+
+      case 3 :
+      	/* I'm off back to the main menu */
+      	finished = 1;
+	break;
+    }
+  } while (!finished);
+
+  /* Restore old player types */
+  for (p=0; p<4; p++) {
+    plr_type[p] = safetype[p];
+  }
+}
+
+void choose_control_method(int player)
+{
+  multiplayer_options(0);
+
+  /*ubyte opt_id[4];
+
+  msg[31][7] = '1'+player;
+
+  ready_for_new_menu();
+
+  add_new_menu_item(msg[31],0,80,CENTRE);
+  add_new_menu_item(msg[5],0,110,CENTRE);
+  highlighted_item(add_new_menu_item(msg[23],0,200,CENTRE));
+
+  open_menu();
+
+  do {
+    read_menu_joy();
+
+    draw_menu_screen();
+
+    maintain_menu();
+
+    swapscreen();
+  } while (!(menu_joy_data & FIRE1));
+
+  close_menu();*/
+}
+
+int end_of_round(int num_of_players)
+{
+  /* We've come to the end of a battle round, and somebody won.
+  ** Find out who, update the scores, display the scores, then end.
+  */
+  int plr, winner, s, id, p;
+
+  winner = -1;
+
+  for (plr=0; plr<4 && winner==-1; plr++) {
+#ifndef NO_LOGFILE
+    logfile("player %d : type %d\n",plr,plr_type[plr]);
+#endif
+    if (plr_type[plr]) {
+      if (!((players[plr].status>>4)==5 && players[plr].anim_ctr==255)) {
+        winner = plr;
+      }
+    }
+  }
+
+#ifndef NO_LOGFILE
+  logfile("winner : %d\n",winner);
+#endif
+
+  /* Someone must have won, so let's not worry about the case winner==-1 */
+  roundscores[winner]++;
+
+  /* Show current scores */
+  for (p=plr=0; p<4; p++) {
+    if (plr_type[p]) {
+      /* Show players name */
+      add_new_menu_item(players[p].name,20,110+22*plr,LEFT_ALIGN+CYAN);
+
+      /* Show their score in *'s */
+      for (s=0; s<roundscores[p]; s++) {
+        id = add_new_menu_item("*",195+(s*24),110+22*plr,LEFT_ALIGN+CYAN);
+      }
+
+      /* Blank entries in -'s */
+      for (; s<battle_rounds; s++) {
+        add_new_menu_item("-",195+(s*24),110+22*plr,LEFT_ALIGN+CYAN);
+      }
+
+      if (p==winner) {
+        /* Highlight new point awarded */
+        highlighted_item(id);
+      }
+
+      plr++;
+    }
+  }
+
+  add_new_menu_item(msg[6],0,220,CENTRE+CYAN);
+
+  open_menu();
+
+  do {
+    read_menu_joy();
+
+    draw_menu_screen();
+
+    maintain_menu();
+
+    swapscreen();
+  } while (!(menu_joy_data & FIRE1));
+
+  MENU_SEL_SFX;
+
+  if (roundscores[winner]==battle_rounds) {
+    /* We have an overall winner, ladies and gentlemen */
+    close_menu();
+
+    add_new_menu_item(msg[62],0,100,CENTRE+CYAN);
+    add_new_menu_item(players[winner].name,0,150,CENTRE+CYAN);
+    add_new_menu_item(msg[6],0,220,CENTRE+CYAN);
+
+    open_menu();
+
+    do {
+      read_menu_joy();
+
+      draw_menu_screen();
+
+      maintain_menu();
+
+      swapscreen();
+    } while (!(menu_joy_data & FIRE1));
+
+    MENU_SEL_SFX;
+
+    close_menu();
+
+    return 1;
+  }
+  else {
+    close_menu_completely(1);
+
+    return 0;
+  }
+}
+
+void drawn_battle(void)
+{
+  ubyte mess[] = { 63, 64, 65 };
+  ubyte m;
+
+  for (m=0; m<3; m++) {
+    add_new_menu_item(msg[mess[m]],0,80+30*m,CENTRE+CYAN);
+  }
+
+  highlighted_item(add_new_menu_item(msg[6],0,220,CENTRE+CYAN));
+
+  open_menu();
+
+  do {
+    read_menu_joy();
+
+    draw_menu_screen();
+
+    maintain_menu();
+
+    swapscreen();
+  } while (!(menu_joy_data & FIRE1));
+
+  MENU_SEL_SFX;
+
+  close_menu_completely(1);
+}
+
+void serial_link_died(void)
+{
+  add_new_menu_item(msg[150],0,110,CENTRE+CYAN);
+  add_new_menu_item(msg[152],0,150,CENTRE+CYAN);
+  add_new_menu_item(msg[6],0,200,CENTRE+CYAN);
+
+  open_menu();
+
+  do {
+    read_menu_joy();
+
+    draw_menu_screen();
+
+    maintain_menu();
+
+    swapscreen();
+  } while (!(menu_joy_data & FIRE1));
+
+  MENU_SEL_SFX;
+
+  close_menu();
+}
+
+int begin_new_game(int num_of_players,int start_level,int game_type)
+{
+  /* returns 1 if finished, 0 if returning to previous menu */
+  int finished_reason, done, j, user_start_lev;
+
+  /* Initialise player data for new game */
+  if (game_type==SINGLE_PLAYER) {
+    prepare_players(3);
+
+    /* Reset score */
+    score = 0;
+
+    do {
+      /* Prepare bomb data for new game */
+      init_bombs();
+
+      /* Load level */
+      load_game_level(game_sector,game_level);
+
+      /* First of a new sector? */
+      if (game_sector != EPIS_USER && game_level == 0) {
+        pre_sector_text(game_sector);
+      }
+
+      /* Tell player to get ready, etc. */
+      pre_level_text(game_sector,game_level);
+
+      /* Fiddle if necessary */
+      if (cheat_mode) {
+        players[0].lives = 15;
+        players[0].flames = 15;
+        players[0].bombs = 15;
+      }
+
+      /* Draw game screen border (and display as well) */
+      construct_game_screen(num_of_players,1);
+
+      /* and begin... */
+      finished_reason = game(game_type);
+
+      switch (finished_reason) {
+        case PLAYER_DEAD :
+          single_player_dead_screen();
+          high_score_updater();
+          return 1;
+          break;
+        case USER_QUIT :
+          return 1;
+          break;
+        case LEVEL_COMPLETE :
+          if (game_sector == EPIS_USER) {
+            user_1_plr_curr_lev++;
+
+            if (user_1_plr_curr_lev == user_1_plr_lev_count) {
+              /* End of game */
+              single_player_end_of_user_game();
+              high_score_updater();
+              return 1;
+            }
+
+            game_level = user_1_plr_lev[user_1_plr_curr_lev];
+          }
+          else {
+            game_level++;
+            if (game_level==8) {
+              game_level = 0;
+              game_sector++;
+              if (game_sector==4) {
+                /* End of game! */
+                single_player_end_of_game();
+                high_score_updater();
+                return 1;
+              }
+            }
+          }
+          break;
+      }
+
+      /* Reset player */
+      player_ready_for_next_level();
+
+      /* Update max jump level ? */
+      if (game_sector != EPIS_USER) {
+        j = (game_sector<<3) + game_level;
+        if (max_jump_level < j) max_jump_level = j;
+      }
+    } while (1);
+  }
+  else {
+    int plr, replay, lvl;
+
+    do {
+      replay = 0;
+
+      for (plr=0; plr<4; plr++) {
+        roundscores[plr] = 0;
+      }
+
+      done = 0;
+
+      do {
+        prepare_players(battle_lives);
+
+        /* Prepare bomb data for new game */
+        init_bombs();
+
+        /* Draw game screen border (and display as well) */
+        construct_game_screen(num_of_players,1);
+
+        /* Load level */
+        if (battle_level<0) {
+          if (serial_linked) rnd_seed = serial_rnd_seed;
+          lvl = (rnd()&0x7fffffff)%(8+user_battle_lev_count);
+        }
+        else lvl = battle_level;
+
+        if (lvl>7) {
+          /* User defined */
+          load_game_level(EPIS_USER,user_battle_lev[lvl-8]);
+        }
+        else {
+          /* Predefined level */
+          load_game_level(lvl>>1,8+(lvl&1));
+        }
+
+        /* and begin... */
+        finished_reason = game(game_type);
+
+        switch (finished_reason) {
+          case BATTLE_WON :
+            /* Update round scores. If end of game, this returns true,
+            ** in which case we should exit to main menu.
+            */
+            if (end_of_round(4)) {
+              done = 1;
+              replay = another_multiplayer_go();
+            }
+
+            break;
+
+          case BATTLE_DRAWN :
+            /* All players ended up dead. That's a bit daft. */
+            drawn_battle();
+
+            break;
+
+          case BATTLE_LINK_LOST :
+            /* Serial link died mid-game */
+            serial_link_died();
+            done = 1;
+            break;
+
+          default :
+            /* User quit? Or something gone wrong! */
+            done = 1;
+        }
+      } while (!done);
+    } while (replay);
+  }
+
+  /* and end */
+  return 0;
+}
+
+void establish_serial_link(void)
+{
+  int s;
+  BOOL link;
+
+  add_new_menu_item(msg[150],0,110,CENTRE+CYAN);
+  add_new_menu_item(msg[146],0,150,CENTRE+CYAN);
+  add_new_menu_item(msg[147],0,175,CENTRE+CYAN);
+
+  open_menu();
+
+  for (s=0; s<4; s++) {
+    draw_menu_screen();
+
+    maintain_menu();
+
+    swapscreen();
+  }
+
+  link = serial_sync_master();
+
+  MENU_SEL_SFX;
+
+  close_menu();
+
+  add_new_menu_item(msg[150],0,110,CENTRE+CYAN);
+
+  if (link) {
+    add_new_menu_item(msg[148],0,150,CENTRE+CYAN);
+  }
+  else {
+    add_new_menu_item(msg[149],0,150,CENTRE+CYAN);
+  }
+
+  add_new_menu_item(msg[6],0,200,CENTRE+CYAN);
+
+  open_menu();
+
+  do {
+    read_menu_joy();
+
+    draw_menu_screen();
+
+    maintain_menu();
+
+    swapscreen();
+  } while (!(menu_joy_data & FIRE1));
+
+  MENU_SEL_SFX;
+
+  close_menu();
+}
+
+int battle_game(void)
+{
+  /* Returns 1 after the game to quit to main menu,
+  ** Returns 0 if user wants to quit to previous menu.
+  */
+  ubyte opts[7];
+  ubyte opt_id[7];
+  ubyte type_id[4];
+  ubyte	act_op[7];
+  ubyte maxopts, finished, opt, choice, retval;
+  BOOL	valid;
+  int   num_of_players;
+  ubyte plrcol[4] = {
+    BLUE,
+    RED,
+    GREEN,
+    MAGENTA
+  };
+
+  finished = 0;
+
+  serial_sys_init();
+
+  /* Build option list */
+  for (opt=0; opt<4; opt++) {
+    opts[opt] = 18+opt;
+    act_op[opt] = opt;
+  }
+  maxopts = 4;
+
+  /* Link option */
+  opts[maxopts] = 143;
+  act_op[maxopts++] = 6;
+
+  /* Start option */
+  opts[maxopts] = 22;
+  act_op[maxopts++] = 4;
+
+  /* return option */
+  opts[maxopts] = 23;
+  act_op[maxopts++] = 5;
+
+  do {
+    opts[4] = (serial_linked) ? ((serial_master) ? 144:145):143;
+
+    ready_for_new_menu();
+
+    add_new_menu_item(msg[157],0, 80,CENTRE+CYAN);
+
+    for (opt=0; opt<maxopts; opt++) {
+      if (act_op[opt]<4) {
+        add_new_menu_item(msg[18+opt],10,102+opt*19,LEFT_ALIGN+plrcol[opt]);
+        type_id[opt] = add_new_menu_item(msg[138+plr_type[opt]],310,
+        	       			 102+opt*19,RIGHT_ALIGN+plrcol[opt]);
+        opt_id[opt] = add_new_menu_item(players[opt].name,0,
+        	      			102+opt*19,CENTRE+plrcol[opt]);
+      }
+      else {
+        opt_id[opt] = add_new_menu_item(msg[opts[opt]],0,102+opt*19,CENTRE+CYAN);
+      }
+    }
+
+    choice = maxopts-1;
+
+    highlighted_item(opt_id[choice]);
+
+    do {
+      read_menu_joy();
+
+      if (!serial_linked) {
+        if (serial_detect_sync()) {
+          change_item_text_ptr(opt_id[4],msg[145]);
+
+          for (opt=0;opt<4;opt++) {
+            change_item_text_ptr(type_id[act_op[opt]],
+            			 msg[138+plr_type[act_op[opt]]]);
+          }
+        }
+      }
+
+      old_menu_choice = choice;
+
+      if (menu_joy_data & UP) choice--;
+      if (menu_joy_data & DOWN) choice++;
+
+      if (!serial_linked && (menu_joy_data & LEFT) && act_op[choice]<4) {
+        /* Attempt to change player type */
+        if (plr_type[act_op[choice]]>PLR_SLEEPING) {
+          opt = act_op[choice];
+
+          plr_type[opt]--;
+
+          change_item_text_ptr(type_id[opt],msg[138+plr_type[opt]]);
+
+          MENU_SEL_SFX;
+      	}
+      }
+
+      if (!serial_linked && (menu_joy_data & RIGHT) && act_op[choice]<4) {
+        /* Attempt to change player type */
+        if (plr_type[act_op[choice]]<PLR_REMOTE) {
+          opt = act_op[choice];
+
+          plr_type[opt]++;
+
+          change_item_text_ptr(type_id[opt],msg[138+plr_type[opt]]);
+
+          MENU_SEL_SFX;
+      	}
+      }
+
+      if (choice==255) choice=maxopts-1;
+      if (choice>maxopts-1) choice=0;
+
+      if (choice!=old_menu_choice) MENU_MOV_SFX;
+
+      highlighted_item(opt_id[choice]);
+
+      draw_menu_screen();
+
+      maintain_menu();
+
+      swapscreen();
+
+      valid = FALSE;
+
+      if (act_op[choice]<4) {
+        /* Is player active? */
+        if (plr_type[act_op[choice]] != PLR_SLEEPING) valid = TRUE;
+      }
+      else if (act_op[choice]==4) {
+        /* Enough players active? */
+        num_of_players = 0;
+
+        for (opt=0; opt<4; opt++) {
+          if (plr_type[opt]==PLR_HUMAN ||
+              plr_type[opt]==PLR_CPU ||
+              (serial_linked && plr_type[opt]==PLR_REMOTE)) num_of_players++;
+        }
+
+        valid = (num_of_players>1);
+      }
+      else if (act_op[choice]==6) {
+        num_of_players = 0;
+
+        for (opt=0; opt<4; opt++) {
+          if (plr_type[opt]==PLR_HUMAN || plr_type[opt]==PLR_CPU) {
+            num_of_players++;
+          }
+        }
+
+        if (num_of_players) {
+          num_of_players = 0;
+
+          for (opt=0; opt<4; opt++) {
+            if (plr_type[opt]==PLR_REMOTE) {
+              num_of_players++;
+            }
+          }
+
+          if (num_of_players) valid = TRUE;
+        }
+      }
+      else if (act_op[choice]==5) valid = TRUE;
+
+    } while (!valid || !(menu_joy_data & FIRE1));
+
+    MENU_SEL_SFX;
+
+    close_menu();
+
+    if (act_op[choice]<4) {
+      if (plr_type[act_op[choice]] == PLR_CPU) {
+        mult_opt_cpu(act_op[choice]);
+      }
+      else {
+        multiplayer_options(act_op[choice]);
+      }
+    }
+    else if (act_op[choice]==6) {
+      /* Serial link */
+      if (serial_linked) {
+        /* Want to break link */
+        serial_linked = FALSE;
+        finished = 1;
+        retval = 0;
+      }
+      else {
+        /* Want to establish link */
+        establish_serial_link();
+      }
+    }
+    else if (act_op[choice]==4) {
+      /* start game */
+      global_plrcount = num_of_players;
+
+      if (serial_linked) {
+        if (serial_master) {
+          finished = prepare_multiplayer_game(num_of_players);
+        }
+        else {
+          finished = prepare_multiplayer_game_slave(num_of_players);
+        }
+      }
+      else {
+        finished = prepare_multiplayer_game(num_of_players);
+      }
+
+      if (finished) retval = 1;
+    }
+    else {
+      /* previous menu */
+      finished = 1;
+      retval = 0;
+    }
+  } while (!finished);
+
+  return retval;
+}
+
+void update_lives_text(void)
+{
+  if (battle_lives<10) {
+    msg[24][18] = '0'+battle_lives;
+    msg[24][19] = 0;
+  }
+  else {
+    msg[24][18] = '0'+(battle_lives/10);
+    msg[24][19] = '0'+(battle_lives%10);
+  }
+}
+
+void update_rounds_text(void)
+{
+  msg[61][19] = '0'+battle_rounds;
+
+  /* Make game plural? */
+  msg[61][25] = (battle_rounds>1) ? 's':0;
+}
+
+int prepare_multiplayer_game_slave(int num_of_players)
+{
+  int s;
+  BOOL link;
+
+  add_new_menu_item(msg[150],0,110,CENTRE+CYAN);
+  add_new_menu_item(msg[151],0,150,CENTRE+CYAN);
+
+  open_menu();
+
+  for (s=0; s<4; s++) {
+    draw_menu_screen();
+
+    maintain_menu();
+
+    swapscreen();
+  }
+
+  link = serial_sync_pregame_slave();
+
+  close_menu();
+
+  if (!link) {
+    add_new_menu_item(msg[150],0,110,CENTRE+CYAN);
+    add_new_menu_item(msg[152],0,150,CENTRE+CYAN);
+    add_new_menu_item(msg[6],0,200,CENTRE+CYAN);
+
+    open_menu();
+
+    do {
+      read_menu_joy();
+
+      draw_menu_screen();
+
+      maintain_menu();
+
+      swapscreen();
+    } while (!(menu_joy_data & FIRE1));
+
+    MENU_SEL_SFX;
+
+    close_menu();
+
+    return 1;
+  }
+
+  close_menu_completely(1);
+
+  begin_new_game(num_of_players,0,BATTLE_MODE);
+
+  return 1;
+}
+
+int prepare_multiplayer_game(int num_of_players)
+{
+  /* set number of lives and start level,
+  ** then start or return to previous menu
+  */
+  ubyte opts[] = { 24, 61, 25, 0, 26, 23 };
+  ubyte opt_id[5];
+  ubyte choice, opt, finished, retval, oldv;
+  char bopt[32];
+
+  finished = 0;
+
+  if (battle_level > 7) {
+    /* User defined level - have we got one? */
+    if ((battle_level-8) < user_battle_lev_count) {
+      /* Nope - reset! */
+      battle_level = 0;
+    }
+  }
+
+  do {
+    update_lives_text();
+    update_rounds_text();
+
+    ready_for_new_menu();
+
+    add_new_menu_item(msg[11],0,80,CENTRE+CYAN);
+
+    strcpy(bopt,msg[107]);
+    strcat(bopt,msg[108+bonus_quant]);
+
+    if (battle_level<0) opts[2] = 137;
+    else if (battle_level<8) opts[2] = 25;
+    else opts[2] = 156;
+
+    for (opt=0; opt<6; opt++) {
+      if (opt==3) {
+        opt_id[opt] = add_new_menu_item(bopt,0,110+22*opt,CENTRE+CYAN);
+      }
+      else {
+        opt_id[opt] = add_new_menu_item(msg[opts[opt]],0,110+22*opt,CENTRE+CYAN);
+      }
+    }
+
+    choice = 5;
+
+    if (battle_level < 8) {
+      msg[25][14] = battle_level+'1';
+    }
+    else {
+      int l;
+
+      l = battle_level-7;
+
+      if (l<10) {
+        msg[156][19] = '0'+l;
+        msg[156][20] = 0;
+      }
+      else {
+        msg[156][19] = '1';
+        msg[156][20] = '0' + (l-10);
+      }
+    }
+
+    highlighted_item(opt_id[choice]);
+
+    open_menu();
+
+    do {
+      read_menu_joy();
+
+      old_menu_choice = choice;
+
+      if (menu_joy_data & UP) choice--;
+      if (menu_joy_data & DOWN) choice++;
+
+      if (choice==255) choice = 5;
+      if (choice>5) choice = 0;
+
+      if (choice!=old_menu_choice) MENU_MOV_SFX;
+
+      switch (choice) {
+        case 0 :
+          oldv = battle_lives;
+
+          if (menu_joy_data & LEFT) battle_lives--;
+          if (menu_joy_data & RIGHT) battle_lives++;
+
+          if (battle_lives<1) battle_lives = 1;
+          if (battle_lives>10) battle_lives=10;
+
+	  if (oldv!=battle_lives) MENU_ALT_SFX;
+
+          update_lives_text();
+
+          break;
+
+        case 1 :
+          oldv = battle_rounds;
+
+          if (menu_joy_data & LEFT) battle_rounds--;
+          if (menu_joy_data & RIGHT) battle_rounds++;
+
+          if (battle_rounds<1) battle_rounds = 1;
+          if (battle_rounds>5) battle_rounds = 5;
+
+	  if (oldv!=battle_rounds) MENU_ALT_SFX;
+
+          update_rounds_text();
+
+          break;
+
+        case 2 :
+          oldv = battle_level;
+
+          if (menu_joy_data & LEFT) battle_level--;
+          if (menu_joy_data & RIGHT) battle_level++;
+
+          if (battle_level<-1) battle_level = -1;
+          if (battle_level>(7+user_battle_lev_count)) {
+            battle_level = 7 + user_battle_lev_count;
+          }
+
+	  if (oldv!=(ubyte)battle_level) {
+	    MENU_ALT_SFX;
+
+	    if (battle_level<0)
+	      change_item_text_ptr(opt_id[choice],msg[137]);
+	    else {
+	      change_item_text_ptr(opt_id[choice],msg[(battle_level>7) ? 156:25]);
+	    }
+	  }
+
+          if (battle_level < 8) {
+            msg[25][14] = battle_level+'1';
+          }
+          else {
+            int l;
+
+            l = battle_level-7;
+
+            if (l<10) {
+              msg[156][19] = '0'+l;
+              msg[156][20] = 0;
+            }
+            else {
+              msg[156][19] = '1';
+              msg[156][20] = '0' + (l-10);
+            }
+          }
+
+          break;
+
+        case 3 :
+          oldv = bonus_quant;
+
+          if (menu_joy_data & LEFT) bonus_quant--;
+          if (menu_joy_data & RIGHT) bonus_quant++;
+
+          if (bonus_quant<0) bonus_quant = 0;
+          if (bonus_quant>3) bonus_quant = 3;
+
+	  if (oldv!=bonus_quant) {
+	    MENU_ALT_SFX;
+	    strcpy(bopt,msg[107]);
+	    strcat(bopt,msg[108+bonus_quant]);
+	  }
+
+          break;
+      }
+
+      highlighted_item(opt_id[choice]);
+
+      draw_menu_screen();
+
+      maintain_menu();
+
+      swapscreen();
+    } while (!((menu_joy_data & FIRE1) && choice>3));
+
+    MENU_SEL_SFX;
+
+    if (choice==4) {
+      if (serial_linked) {
+        int lp;
+
+        close_menu();
+
+        add_new_menu_item(msg[150],0,110,CENTRE+CYAN);
+        add_new_menu_item(msg[153],0,150,CENTRE+CYAN);
+
+        open_menu();
+
+        for (lp=0; lp<3; lp++) {
+          draw_menu_screen();
+
+          maintain_menu();
+
+          swapscreen();
+        }
+
+        if (!serial_sync_pregame_master()) {
+          add_new_menu_item(msg[150],0,110,CENTRE+CYAN);
+          add_new_menu_item(msg[152],0,150,CENTRE+CYAN);
+          add_new_menu_item(msg[6],0,200,CENTRE+CYAN);
+
+          open_menu();
+
+          do {
+            read_menu_joy();
+
+            draw_menu_screen();
+
+            maintain_menu();
+
+            swapscreen();
+          } while (!(menu_joy_data & FIRE1));
+
+          MENU_SEL_SFX;
+
+          close_menu();
+
+          return 1;
+        }
+        else close_menu();
+      }
+
+      close_menu_completely(1);
+
+      begin_new_game(num_of_players,0,BATTLE_MODE);
+      retval = 1;
+      finished = 1;
+    }
+    else {
+      close_menu();
+
+      finished = 1;
+      retval = 0;
+    }
+  } while (!finished);
+
+  return retval;
+}
+
+void multiplayer_options(int player_num)
+{
+  ubyte opts[] = { 27, 0, 47, 23 };
+  ubyte opt_id[4];
+  ubyte finished, opt, choice;
+  char  ctrl_str[32];
+  ubyte	ctype, cword;
+  ubyte	action, oldv;
+  ubyte ic_id;
+
+  finished = action = 0;
+
+  cword = players[player_num].ctrl_word;
+  ctype = ctrl_word_type[cword];
+
+  /* Set ctrl string */
+  if (ctype==JOYSTICK) {
+    msg[45][ 9] = '1'+(cword-4);
+  }
+
+  strcpy(ctrl_str,msg[43]);
+  strcat(ctrl_str,msg[44+ctype]);
+
+  do {
+    ready_for_new_menu();
+
+    ic_id = add_new_menu_item(
+    	       	(char*)ctrl_word_type[players[player_num].ctrl_word],
+    		10,60,ICON+CYAN);
+
+    add_new_menu_item(msg[32+player_num],0,80,CENTRE+CYAN);
+
+    opt_id[2] = 255;
+
+    for (opt=0; opt<4; opt++) {
+      if (opt!=2 || ctype==KEYBOARD) {
+        if (opt!=1) {
+          opt_id[opt] = add_new_menu_item(
+          	      	           msg[opts[opt]],0,110+opt*22,CENTRE+CYAN);
+        }
+        else {
+          opt_id[opt] = add_new_menu_item(ctrl_str,0,110+opt*22,CENTRE+CYAN);
+        }
+      }
+    }
+
+    choice = 3;
+
+    highlighted_item(opt_id[choice]);
+
+    open_menu();
+
+    action = 0;
+
+    do {
+      read_menu_joy();
+
+      old_menu_choice = choice;
+
+      if (menu_joy_data & UP) {
+        choice--;
+        if (choice==2 && ctype!=KEYBOARD) choice--;
+      }
+
+      if (menu_joy_data & DOWN) {
+        choice++;
+        if (choice==2 && ctype!=KEYBOARD) choice++;
+      }
+
+      if (choice==255) choice=3;
+      if (choice>3) choice=0;
+
+      if (choice!=old_menu_choice) MENU_MOV_SFX;
+
+      if (choice==1) {
+        int oldi;
+
+        oldi = ctype;
+        oldv = cword;
+
+        if (menu_joy_data & LEFT) {
+          /* Change control device */
+          if (ctype == KEYBOARD) {
+            cword = 8;
+          }
+          else {
+            cword--;
+            switch (ctrl_word_type[cword]) {
+              case KEYBOARD : cword = player_num; break;
+              case JOYSTICK :
+                if (!joy_available) cword = player_num;
+                break;
+            }
+          }
+        }
+        else if (menu_joy_data & RIGHT) {
+          if (ctype == KEYBOARD) {
+            cword = (joy_available) ? 4:8;
+          }
+          else {
+            cword++;
+            if (cword>8) cword = player_num;
+          }
+        }
+
+        players[player_num].ctrl_word = cword;
+        ctype = ctrl_word_type[cword];
+
+        /* Set ctrl string */
+  	if (ctype==JOYSTICK) {
+  	  msg[45][ 9] = '1'+(cword-4);
+        }
+
+        strcpy(ctrl_str,msg[43]);
+  	strcat(ctrl_str,msg[44+ctype]);
+
+  	if (oldv!=cword) MENU_ALT_SFX;
+  	if (oldi!=ctype) {
+  	  remove_menu_item(ic_id);
+  	  ic_id = add_new_menu_item((char*)ctype,10,60,ICON+CYAN);
+  	  if (ctype==KEYBOARD && opt_id[2]==255) {
+  	    opt_id[2] = add_new_menu_item(msg[opts[2]],0,154,CENTRE+CYAN);
+  	  }
+  	  else if (oldi==KEYBOARD) {
+  	    remove_menu_item(opt_id[2]);
+  	    opt_id[2] = 255;
+  	  }
+  	}
+      }
+
+      if (menu_joy_data & FIRE1) {
+        /* Need to change menu! */
+        if (!(choice==2 && ctype!=KEYBOARD)) action = 1;
+      }
+
+      highlighted_item(opt_id[choice]);
+
+      draw_menu_screen();
+
+      maintain_menu();
+
+      swapscreen();
+    } while (!action);
+
+    MENU_SEL_SFX;
+
+    close_menu();
+
+    switch (choice) {
+      case 0 : /* Change name */
+        enter_name(player_num);
+        break;
+
+      case 2 : /* Redefine keys */
+        key_defs(player_num);
+        break;
+
+      case 3 : /* Done */
+        finished = 1;
+    }
+
+  } while (!finished);
+}
+
+void mult_opt_cpu(int player_num)
+{
+  ubyte opts[] = { 27, 23 };
+  ubyte opt_id[3];
+  ubyte finished, opt, choice;
+  ubyte	action;
+  ubyte ic_id;
+
+  finished = action = 0;
+
+  do {
+    ready_for_new_menu();
+
+    ic_id = add_new_menu_item(
+    	       	(char*)ctrl_word_type[players[player_num].ctrl_word],
+    		10,60,ICON+CYAN);
+
+    add_new_menu_item(msg[32+player_num],0,80,CENTRE+CYAN);
+    add_new_menu_item(msg[142],0,102,CENTRE+CYAN);
+
+    opt_id[2] = 255;
+
+    for (opt=0; opt<2; opt++) {
+      opt_id[opt] = add_new_menu_item(
+          	      	           msg[opts[opt]],0,130+opt*22,CENTRE+CYAN);
+    }
+
+    choice = 1;
+
+    highlighted_item(opt_id[choice]);
+
+    open_menu();
+
+    action = 0;
+
+    do {
+      read_menu_joy();
+
+      old_menu_choice = choice;
+
+      if (menu_joy_data & (UP|DOWN)) choice ^= 1;
+
+      if (choice!=old_menu_choice) MENU_MOV_SFX;
+
+      if (menu_joy_data & FIRE1) {
+        /* Need to change menu! */
+        action = 1;
+      }
+
+      highlighted_item(opt_id[choice]);
+
+      draw_menu_screen();
+
+      maintain_menu();
+
+      swapscreen();
+    } while (!action);
+
+    MENU_SEL_SFX;
+
+    close_menu();
+
+    switch (choice) {
+      case 0 : /* Change name */
+        enter_name(player_num);
+        break;
+
+      case 1 : /* Done */
+        finished = 1;
+    }
+
+  } while (!finished);
+}
+
+void enter_name(int player_num)
+{
+  /* Enter players name */
+  char temp_str[16];
+  char last_char, new_char;
+  int  key_repeat;
+  int  strpos;
+  int  flash;
+  int  finished;
+
+  finished = 0;
+
+  /* Copy current name into temp space */
+  strpos = 0;
+  if (players[player_num].name[0] != 0) {
+    do {
+      temp_str[strpos] = players[player_num].name[strpos];
+      strpos++;
+    } while (temp_str[strpos-1] && strpos<11);
+  }
+
+  if (strpos!=11) strpos--;
+
+  temp_str[strpos] = '*'; /* cursor character */
+  temp_str[strpos+1] = 0; /* EOL */
+
+  flash = 0; /* cursor blink */
+
+  ready_for_new_menu();
+
+  add_new_menu_item(msg[42],0,80,CENTRE+CYAN);
+  add_new_menu_item(temp_str,80,110,LEFT_ALIGN+CYAN);
+
+  open_menu();
+
+  /* Debounce return key */
+  last_char = 2;
+  key_repeat = KEY_PAUSE;
+
+  do {
+    /* read keyboard */
+    new_char = scan_keyboard();
+    if (new_char!=0xff) new_char = keycode[new_char];
+    else new_char = 0;
+
+    if (new_char != last_char || (new_char && key_repeat==0)) {
+      /* New character! */
+      if (new_char<32) {
+        /* control code */
+        switch (new_char) {
+          case 1 : /* Delete key */
+            if (strpos>0) {
+              /* There's a character to delete */
+              strpos--;
+              temp_str[strpos] = '*'; /* cursor character */
+              temp_str[strpos+1] = 0; /* EOL */
+              flash = 0;
+
+              MENU_MOV_SFX;
+            }
+
+            break;
+
+          case 2 : /* Enter key */
+            finished = 1;
+        }
+      }
+      else {
+        /* Add character to string */
+        if (strpos<11) { /* maximum length of string */
+          temp_str[strpos++] = new_char;
+          temp_str[strpos] = '*'; /* cursor character */
+          temp_str[strpos+1] = 0; /* EOL */
+          flash = 0;
+
+          MENU_MOV_SFX;
+        }
+
+      }
+
+      key_repeat = (last_char==new_char) ? KEY_REPEAT_SPEED:KEY_PAUSE;
+      last_char = new_char;
+    }
+
+    /* flash cursor */
+    temp_str[strpos] = (flash<32) ? '*':0;
+    flash = (flash+1)&63;
+
+    /* Handle key repetition */
+    if (key_repeat) key_repeat--;
+
+    draw_menu_screen();
+
+    maintain_menu();
+
+    swapscreen();
+  } while (!finished);
+
+  MENU_SEL_SFX;
+
+  /* Remove cursor */
+  temp_str[strpos] = 0;
+
+  /* New name has been entered - copy it to player structure */
+  strcpy(players[player_num].name,temp_str);
+
+  close_menu();
+}
+
+void text_entry_init(char *string, int x, int y, int align, int max)
+{
+  /* Generic text entry */
+
+  /* Copy current name into temp space */
+  txt_strpos = 0;
+  if (*string != 0) {
+    do {
+      txt_temp_str[txt_strpos] = *(string+txt_strpos);
+      txt_strpos++;
+    } while (txt_temp_str[txt_strpos-1] && txt_strpos<max);
+  }
+
+  if (txt_strpos!=max) txt_strpos--;
+
+  txt_temp_str[txt_strpos] = '*'; /* cursor character */
+  txt_temp_str[txt_strpos+1] = 0; /* EOL */
+
+  txt_flash = 0; /* cursor blink */
+
+  txt_last_char = 0;
+
+  txt_max_len = max;
+
+  add_new_menu_item(txt_temp_str,x,y,align+CYAN);
+
+  /* Wait until player lets go of return */
+  while (scan_keyboard() == 2);
+}
+
+int text_entry_maintain(void)
+{
+  int finished;
+
+  finished = 0;
+
+  /* read keyboard */
+  txt_new_char = scan_keyboard();
+  if (txt_new_char!=0xff) txt_new_char = keycode[txt_new_char];
+  else txt_new_char = 0;
+
+  if (txt_new_char != txt_last_char || (txt_new_char && txt_key_repeat==0)) {
+    /* New character! */
+    if (txt_new_char<32) {
+      /* control code */
+      switch (txt_new_char) {
+        case 1 : /* Delete key */
+          if (txt_strpos>0) {
+            /* There's a character to delete */
+            txt_strpos--;
+            txt_temp_str[txt_strpos] = '*'; /* cursor character */
+            txt_temp_str[txt_strpos+1] = 0; /* EOL */
+            txt_flash = 0;
+
+            MENU_MOV_SFX;
+          }
+
+          break;
+
+        case 2 : /* Enter key */
+          finished = 1;
+      }
+    }
+    else {
+      /* Add character to string */
+      if (txt_strpos<txt_max_len) { /* maximum length of string */
+        txt_temp_str[txt_strpos++] = txt_new_char;
+        txt_temp_str[txt_strpos] = '*'; /* cursor character */
+        txt_temp_str[txt_strpos+1] = 0; /* EOL */
+        txt_flash = 0;
+
+        MENU_MOV_SFX;
+      }
+
+    }
+
+    txt_key_repeat = (txt_last_char==txt_new_char) ?
+    		      	KEY_REPEAT_SPEED:KEY_PAUSE;
+    txt_last_char = txt_new_char;
+  }
+
+  /* flash cursor */
+  txt_temp_str[txt_strpos] = (txt_flash<32) ? '*':0;
+  txt_temp_str[txt_strpos+1] = 0;
+  txt_flash = (txt_flash+1)&63;
+
+  /* Handle key repetition */
+  if (txt_key_repeat) txt_key_repeat--;
+
+  return finished;
+}
+
+void text_entry_end(char *string)
+{
+  MENU_SEL_SFX;
+
+  /* Remove cursor */
+  txt_temp_str[txt_strpos] = 0;
+
+  /* New name has been entered - copy it to player structure */
+  strcpy(string,txt_temp_str);
+}
+
+void key_defs(int player_num)
+{
+  /* Set the keyboard settings for the specified player */
+  ubyte opt_id[4][6];
+  ubyte finished, opt, choice, plr;
+  int	keycode;
+  ubyte active[4];
+  ubyte plr_id[4];
+  ubyte exit_id;
+  ubyte editing;
+  ubyte startx,spacing,activecount;
+  char  plrs[4][6] = {
+    "plr 1",
+    "plr 2",
+    "plr 3",
+    "plr 4",
+  };
+  char  control[][6] = {
+    "^ ",
+    "_ ",
+    "@ ",
+    "` ",
+    "&1",
+    "&2"
+  };
+  char  no_key[] = "--";
+  char  empty[] = "{}";
+
+  finished = 0;
+
+  ready_for_new_menu();
+
+  for (plr=activecount=0; plr<4; plr++) {
+    active[plr] = plr_type[plr] == PLR_HUMAN &&
+    		  (ctrl_word_type[players[plr].ctrl_word]==KEYBOARD);
+    if (active[plr]) activecount++;
+  }
+
+  startx = 40 + (4-activecount)*35;
+  spacing = 70 + (4-activecount)*15;
+
+  for (plr=0; plr<6; plr++) {
+    if (activecount<4)
+      add_new_menu_item(control[plr],(startx-40),105+20*plr,LEFT_ALIGN+CYAN);
+    else
+      add_new_menu_item(control[plr],(startx-10),105+20*plr,RIGHT_ALIGN+CYAN);
+  }
+
+  for (plr=activecount=0; plr<4; plr++) {
+    if (active[plr]) {
+      plr_id[plr] = add_new_menu_item(plrs[plr],startx+spacing*activecount,
+      		    		      80,LEFT_ALIGN+CYAN);
+
+      for (opt=0; opt<6; opt++) {
+        /* Keep keycode within valid range */
+        game_keyboard_def[plr][opt] &= 0x7f;
+
+        keycode = active[plr] ? game_keyboard_def[plr][opt]:255;
+
+        opt_id[plr][opt] =
+          add_new_menu_item((keycode!=255) ? keynames[keycode]:no_key,           		    startx+spacing*activecount,105+20*opt,LEFT_ALIGN+CYAN);
+      }
+
+      activecount++;
+    }
+  }
+
+  exit_id = add_new_menu_item(msg[23],0,225,CENTRE+CYAN);
+
+  plr = player_num;
+  choice = 0;
+
+  highlighted_item(opt_id[plr][choice]);
+
+  open_menu();
+
+  editing = 0;
+
+  do {
+    if (!editing) {
+      /* Choose an option */
+      read_menu_joy();
+
+      old_menu_choice = plr+choice;
+
+      if (choice<6) {
+        if (menu_joy_data & LEFT) {
+          do {
+            plr--;
+            if (plr==255) plr=3;
+          } while (!active[plr]);
+        }
+
+        if (menu_joy_data & RIGHT) {
+          do {
+            plr++;
+            if (plr>3) plr=0;
+          } while (!active[plr]);
+        }
+      }
+
+      if (menu_joy_data & DOWN) choice++;
+      if (menu_joy_data & UP) choice--;
+
+      if (choice==255) choice=6;
+      if (choice>6) choice=0;
+
+      if (menu_joy_data & FIRE1) {
+        if (choice==6) {
+          finished = 1;
+        }
+        else {
+          if (active[plr]) {
+	    change_item_text_ptr(opt_id[plr][choice], empty);
+            editing = 1;
+          }
+        }
+      }
+
+      if ((plr+choice) != old_menu_choice) MENU_MOV_SFX;
+
+      highlighted_item((choice==6) ? exit_id:opt_id[plr][choice]);
+    }
+    else {
+      /* Select new key */
+      switch (editing) {
+        case 1 : /* Wait for keyboard release */
+          keycode = scan_keyboard();
+
+          if (keycode == 0xff) editing = 2;
+
+          break;
+
+        case 2 : /* Wait for key press */
+          keycode = scan_keyboard();
+
+          /* Prevent use of Escape and f12 - menu/pause buttons */
+          if (keycode == KB_ESCAPE || keycode == KB_F12) keycode = 0xff;
+
+          if (keycode != 0xff) {
+            ubyte other_key;
+            ubyte other_plr, key;
+
+            /* We've got one! Is anyone else using it...? */
+            for (other_plr=0; other_plr<4; other_plr++) {
+              for (key=0; key<6; key++) {
+                if (other_plr!=plr || key!=choice) {
+                  if (game_keyboard_def[other_plr][key] == keycode) {
+                    /* Yes - must swap with this one */
+                    other_key = game_keyboard_def[plr][choice];
+
+                    if (other_key==255) {
+                      /* Previously no key defined */
+                      game_keyboard_def[other_plr][key] = 255;
+                      if (active[other_plr]) {
+                        change_item_text_ptr(opt_id[other_plr][key],no_key);
+                      }
+                    }
+                    else {
+                      game_keyboard_def[other_plr][key] = other_key;
+                      if (active[other_plr]) {
+                        change_item_text_ptr(opt_id[other_plr][key],
+               		        		   keynames[other_key]);
+               	      }
+               	    }
+               	  }
+               	}
+              }
+            }
+
+            change_item_text_ptr(opt_id[plr][choice], keynames[keycode]);
+            game_keyboard_def[plr][choice] = keycode;
+
+            editing = 3;
+
+            MENU_MOV_SFX;
+          }
+
+          break;
+
+        case 3 : /* Wait for release again */
+          keycode = scan_keyboard();
+
+          if (keycode == 0xff) editing = 0;
+
+          break;
+      }
+    }
+
+    draw_menu_screen();
+
+    maintain_menu();
+
+    swapscreen();
+  } while (!finished);
+
+  MENU_SEL_SFX;
+
+  close_menu();
+}
+
+void border_block(int bit, int x, int y, pixel *scr)
+{
+  int xoff,yoff;
+
+  if (screenres == MODE_49) {
+    scr += (32*320)+(y-32)*640+x;
+
+    for (yoff=0;yoff<8;yoff++) {
+      for (xoff=0;xoff<8;xoff++) {
+        *(scr+yoff*640+320+xoff) = *(scr+yoff*640+xoff) =
+        			       	 border[bit][yoff][xoff];
+      }
+    }
+  }
+  else {
+    scr += y*320+x;
+
+    for (yoff=0;yoff<8;yoff++) {
+      for (xoff=0;xoff<8;xoff++) {
+        *(scr+yoff*320+xoff) = border[bit][yoff][xoff];
+      }
+    }
+  }
+}
+
+void construct_game_screen(int players_here, int cold)
+{
+  int x,y,plr,n,c;
+  char string[4];
+  pixel *scr;
+
+  logfile("construct_game_screen() with %d players\n",players_here);
+
+  /* First, clear both screen buffers */
+  for (plr=1; plr<=2; plr++) {
+    scr = (pixel *) screenbank[plr];
+    for (y=0;y<((screenres==MODE_13) ? 256:480);y++) {
+      for (x=0;x<320;x+=4) {
+        *((int *) (scr+320*y+x)) = 0;
+      }
+    }
+  }
+
+  /* Now place standard border on both screen banks */
+  for (plr=1; plr<=2; plr++) {
+    scr = (pixel *) screenbank[plr];
+
+    border_block(0,0,32,scr);    /* top left */
+    border_block(1,312,32,scr);	 /* top right */
+    border_block(2,0,248,scr);	 /* bottom left */
+    border_block(3,312,248,scr); /* bottom right */
+
+    for (x=8;x<312;x+=8) {
+      border_block(4,x,32,scr);  /* top edge */
+      border_block(4,x,248,scr); /* bottom edge */
+    }
+
+    for (y=40;y<248;y+=8) {
+      border_block(5,0,y,scr);   /* left edge */
+      border_block(5,312,y,scr); /* right edge */
+    }
+  }
+
+  /* Construct title bar */
+  n = (4-players_here)*40;
+  for (plr=0; plr<4; plr++) {
+    if (plr_type[plr]) {
+      hud_pos[plr] = n;
+
+      if (cold) {
+        if (players_here==1) {
+          hud_mess[plr].string = scorestring;
+        }
+        else {
+          hud_mess[plr].string = &players[plr].name[0];
+        }
+
+        strcpy(scorestring,msg[7]);
+        hud_mess[plr].offset = 0;
+      }
+
+      hud_mess[plr].changed = 1;
+
+      for (y=0;y<32;y++) {
+        for (x=0;x<80;x++) {
+          *((ubyte*) (screenbank[1]+y*320+n+x)) = title_box[1][y][x];
+          *((ubyte*) (screenbank[2]+y*320+n+x)) = title_box[1][y][x];
+        }
+      }
+
+      for (y=0;y<16;y++) {
+        for (x=0;x<16;x++) {
+          c = bomb_gfx[plr][5][y][x];
+          if (c) {
+            *((ubyte*) (screenbank[1]+(y+3)*320+n+x+59)) = c;
+            *((ubyte*) (screenbank[2]+(y+3)*320+n+x+59)) = c;
+          }
+        }
+      }
+
+      string[2] = 0;
+
+      string[0] = '0'+(players[plr].flames/10);
+      string[1] = '0'+(players[plr].flames%10);
+      draw_small_string(string,n+16,4);
+
+      string[0] = '0'+(players[plr].bombs/10);
+      string[1] = '0'+(players[plr].bombs%10);
+      draw_small_string(string,n+16,12);
+
+      string[0] = '0'+(players[plr].lives/10);
+      string[1] = '0'+(players[plr].lives%10);
+      draw_small_string(string,n+16,21);
+
+      n+=80;
+    }
+    else {
+      /* Null players who are not taking part here */
+      hud_mess[plr].string = NULL;
+    }
+  }
+}
+
+void update_hud_mess(void)
+{
+  int plr;
+
+  for (plr=0; plr<4; plr++) {
+    if (hud_mess[plr].string!=NULL) {
+      if (hud_mess[plr].offset!=0) {
+        /* Scrolly message! Update... */
+        hud_mess[plr].timer++;
+
+        if (hud_mess[plr].timer==HUD_SCROLL_SPEED) {
+          hud_mess[plr].offset++;
+          hud_mess[plr].timer = 0;
+          hud_mess[plr].changed = 1;
+        }
+
+        if (hud_mess[plr].offset>(hud_mess[plr].length+12)) {
+          /* End of message... return to score */
+          if (global_game_type == SINGLE_PLAYER) {
+	    hud_mess[plr].string = scorestring;
+	  }
+	  else {
+	    hud_mess[plr].string = &players[plr].name[0];
+	  }
+
+          hud_mess[plr].offset = 0;
+          hud_mess[plr].changed = 1;
+        }
+      }
+    }
+  }
+}
+
+void draw_hud_mess(void)
+{
+  int plr, offset, strpos, c;
+  char mess[16];
+
+  for (plr=0; plr<4; plr++) {
+    if (hud_mess[plr].string!=NULL) {
+      if (hud_mess[plr].changed!=0) {
+        offset = hud_mess[plr].offset;
+
+        if (offset!=0) {
+          strpos = 0;
+
+          if (offset<12) {
+            /* String not at left edge yet */
+            for (; strpos<(12-offset); strpos++) mess[strpos] = ' ';
+            c = 0;
+          }
+          else c = offset-12;
+
+          for (; strpos<12 && *(hud_mess[plr].string+c)!=0; c++,strpos++) {
+            mess[strpos] = *(hud_mess[plr].string+c);
+          }
+
+          for (;strpos<12; strpos++) mess[strpos] = ' ';
+        }
+        else {
+          for (c=0; c<12 && hud_mess[plr].string[c]!=0; c++) {
+            mess[c] = hud_mess[plr].string[c];
+          }
+          for (;c<12; c++) {
+            mess[c] = ' ';
+          }
+        }
+
+        mess[12] = 0;
+
+        draw_small_string(mess,hud_pos[plr]+27,21);
+
+        hud_mess[plr].changed = 0;
+      }
+    }
+  }
+}
+
+void new_hud_mess(char *string, int plr)
+{
+  int l;
+
+  hud_mess[plr].offset = 1;
+  hud_mess[plr].timer = 0;
+  hud_mess[plr].string = string;
+
+  for (l=0; string[l]!=0; l++);
+
+  hud_mess[plr].length = l;
+}
+
+extern int rnd_seed;
+
+void prep_level(ED_LEVEL *lev)
+{
+  int ex, ey, et;
+  int x,y;
+  int gfx_set;
+  int s, lb;
+
+  if (serial_linked) rnd_seed = serial_rnd_seed;
+
+#ifndef NO_LOGFILE
+  logfile("prep level rnd seed : 0x%08x\n",rnd_seed);
+#endif
+
+  /* Default to graphics set for first sector */
+  gfx_set = 0;
+
+  /* First, read map data */
+  for (y=0; y<32; y++) {
+    for (x=0; x<32; x++) {
+      et = (x<21) ? lev->map[x][31-y]:0;
+
+      floor_map[y][x].status = tile_lib[et].status;
+      floor_map[y][x].sprite = tile_lib[et].sprite;
+      floor_map[y][x].extra1 = floor_map[y][x].extra2 = 0;
+      floor_map[y][x].normal_stat = floor_map[y][x].status;
+      floor_map[y][x].blast     = 0;
+      floor_map[y][x].blast_len = 0;
+      floor_map[y][x].overlay   = 0;
+      floor_map[y][x].men_here  = 0;
+
+      if (et>=21 && et<=29) {
+    	/* It's a bonus! */
+        floor_map[y][x].sprite = 29+(rnd()&3);
+        floor_map[y][x].status = 0;
+        floor_map[y][x].normal_stat = 128|(1+(et-21));
+      }
+      else {
+        if (et==12) {
+          /* Empty floor - Add blockage? */
+          if ((rnd()&3)>1) {
+            floor_map[y][x].sprite = 29+(rnd()&3);
+            floor_map[y][x].status = 0;
+            floor_map[y][x].normal_stat = 128;
+          }
+        }
+        else if (et==30) {
+          /* Fuel spillage : normal floor underneath */
+          floor_map[y][x].normal_stat = 128;
+        }
+        else if (et>=17 && et<=20) {
+          /* Blockage! */
+          floor_map[y][x].normal_stat = 128;
+        }
+      }
+    }
+  }
+
+  /* Read enemy data - enemy count first */
+  init_enemies();
+
+  ed_active_nme_count = 0;
+
+  for (x=0; x<64; x++) {
+#ifndef NO_LOGFILE
+    logfile("Checking nme %d\n",x);
+#endif
+    if (lev->nme[x].active) {
+      /* Read details for this enemy */
+      ex = lev->nme[x].pos.x+1;
+      ey = 31-lev->nme[x].pos.y-1;
+      et = lev->nme[x].type;
+
+      /* Clear floor at this coordinate */
+      floor_map[ey][ex].status = tile_lib[12].status;
+      floor_map[ey][ex].normal_stat = tile_lib[12].status;
+      floor_map[ey][ex].sprite = tile_lib[12].sprite;
+
+#ifndef NO_LOGFILE
+      logfile("Creating nme %d @ %d,%d\n",et,ex,ey);
+#endif
+      create_new_enemy(et,ex,ey);
+    }
+  }
+
+  /* Now read level name */
+  x = 0;
+  do {
+    level_name[x] = lev->name[x];
+  } while (level_name[x++]);
+
+  /* Pipe connectivity */
+  setup_pipe_connections(lev);
+
+  for (ex=0; ex<4; ex++) {
+    players[ex].xpos = (lev->plr[ex].x+1)<<4;
+    players[ex].ypos = (31-lev->plr[ex].y-1)<<4;
+
+#ifndef NO_LOGFILE
+    logfile("Player @ %d,%d\n",players[ex].xpos,players[ex].ypos);
+#endif
+
+    if (ex<global_plrcount) {
+      floor_map[players[ex].ypos>>4][players[ex].xpos>>4].men_here = 1<<ex;
+    }
+  }
+
+  /* Multiplayer games are 13 tiles deep, single player games are 30 */
+  arena_depth = (lev->battle) ? 13:30;
+
+  /* random scatterings of bonuses */
+  lb = (!lev->battle) ? 1:bonus_quant;
+
+  if (lb>0) {
+    for (y=1; y<32; y++) {
+      for (x=1; x<32; x++) {
+        s = floor_map[y][x].sprite;
+
+        if (s>=29 && s<=32 && floor_map[y][x].normal_stat==128) {
+          /* It's some blockage, with no bonuses */
+          if ((rnd()&3)>(2-(lb-1))) {
+            s = rnd()&255;
+
+            if (s<64) {
+              /* extra flame */
+              if (lev->battle) floor_map[y][x].normal_stat = 129;
+            }
+            else if (s<128) {
+              /* extra bomb */
+              if (lev->battle) floor_map[y][x].normal_stat = 130;
+            }
+            else if (s<192) {
+              /* Mystery - single player and multiplayer games */
+              floor_map[y][x].normal_stat = 136;
+            }
+            else if (s<200) {
+              /* Mega bomb */
+              if (lev->battle) floor_map[y][x].normal_stat = 131;
+            }
+            else if (s<213) {
+              /* Flower bomb */
+              if (lev->battle) floor_map[y][x].normal_stat = 133;
+            }
+            else if (s<226) {
+              /* throw ability */
+              if (lev->battle) floor_map[y][x].normal_stat = 135;
+            }
+            else if (s<239) {
+              /* push ability bomb */
+              if (lev->battle) floor_map[y][x].normal_stat = 134;
+            }
+            else {
+              /* bouncing bomb */
+              if (lev->battle) floor_map[y][x].normal_stat = 132;
+            }
+          }
+          else {
+            floor_map[y][x].normal_stat = 128;
+          }
+        }
+      }
+    }
+  }
+
+  /* Make sure there are no blockages around our player */
+  for (ex=0; ex<4; ex++) {
+    if (plr_type[ex]) {
+      int px,py,s;
+
+      px = players[ex].xpos>>4;
+      py = players[ex].ypos>>4;
+
+      for (y=-1; y<2; y++) {
+        for (x=-1; x<2; x++) {
+          if ((floor_map[py+y][px+x].normal_stat&128) &&
+              !(floor_map[py+y][px+x].status&128)) {
+            /* This tile contains blockage! */
+            s=floor_map[py+y][px+x].status=floor_map[py+y][px+x].normal_stat;
+
+            if (s==128) {
+              /* Normal floor sprite required */
+              floor_map[py+y][px+x].sprite = 0;
+            }
+            else {
+              /* It must be something else - I'm removing open bonuses */
+              if (s>128 && s<144) {
+                /* It was a bonus */
+                floor_map[py+y][px+x].sprite = 0;
+                floor_map[py+y][px+x].status = 128;
+                floor_map[py+y][px+x].normal_stat = 128;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  if (serial_linked) serial_rnd_seed = rnd_seed;
+}
+
+void load_game_level(int sector, int level)
+{
+  /* Load level data for game*/
+  char  fullpath[32];
+  PFILE* f;
+
+#ifndef NO_LOGFILE
+  logfile("Loading sector %d, level %d\n",sector,level);
+#endif
+
+  /* Construct our full filename, with path */
+  if (sector == curr_episode) {
+    /* Episode already loaded */
+#ifndef NO_LOGFILE
+    logfile("sector %d already loaded [lev %d]\n",sector,level);
+#endif
+    prep_level(&episode[level]);
+  }
+  else {
+    if (sector == EPIS_USER) {
+      /* User episode */
+      revive_user_levels();
+      prep_level(&episode[level]);
+      curr_episode = sector;
+    }
+    else {
+      /* Must load new episode */
+#ifndef NO_LOGFILE
+      logfile("Have to load sector %d\n",sector);
+#endif
+      strcpy(fullpath,level_path);
+      strcat(fullpath,sector_fname[sector]);
+
+      /* Attempt to open file for load */
+      f = pak_fopen(fullpath,"rb");
+
+      if (f==NULL) {
+#ifndef NO_PRINTF
+        printf("Couldn't open level file %s\n",fullpath);
+#endif
+        add_new_menu_item(msg[58],0,80,CENTRE+CYAN);
+        add_new_menu_item(msg[6],0,140,CENTRE+CYAN);
+
+        open_menu();
+
+        do {
+          read_menu_joy();
+
+          draw_menu_screen();
+
+          maintain_menu();
+
+          swapscreen();
+        } while (!(menu_joy_data & FIRE1));
+
+        close_menu();
+      }
+      else {
+        /* File open - try to read it */
+        if (decode_new_format_level(f, FALSE) == FALSE) {
+          /* Failed to decode file */
+          add_new_menu_item(msg[58],0,80,CENTRE+CYAN);
+          add_new_menu_item(msg[6],0,140,CENTRE+CYAN);
+
+          open_menu();
+
+          do {
+            read_menu_joy();
+
+            draw_menu_screen();
+
+            maintain_menu();
+
+            swapscreen();
+          } while (!(menu_joy_data & FIRE1));
+
+          close_menu();
+        }
+        else {
+          /* Success! */
+          prep_level(&episode[level]);
+          curr_episode = sector;
+        }
+      }
+    }
+  }
+}
+
+void init_high_scores(void)
+{
+  ubyte s;
+
+  for (s=0;s<HIGH_SCORE_ENTRIES;s++) {
+    /* Set up default table entry */
+    hscore_table[s].score = 20000-(s*2500);
+    strcpy(hscore_table[s].name,"BEAT ME!!!");
+
+    /* Set up table order */
+    hscore_order[s] = s;
+  }
+}
+
+void add_new_score(int score, char *name)
+{
+  ubyte s, r, n;
+
+  for (s=0; s<HIGH_SCORE_ENTRIES &&
+       	    hscore_table[hscore_order[s]].score>=score; s++);
+
+  if (s<HIGH_SCORE_ENTRIES) {
+    /* Found a slot in the table! */
+
+    /* Replace the last entry in the table with the new one */
+    n = hscore_order[HIGH_SCORE_ENTRIES-1];
+    hscore_table[n].score = score;
+    strcpy(hscore_table[n].name,name);
+
+    /* Shuffle order list */
+    for (r = HIGH_SCORE_ENTRIES-1; r>s; r--) {
+      hscore_order[r] = hscore_order[r-1];
+    }
+
+    hscore_order[s] = n;
+  }
+}
+
+int qualifies_for_high_score_table(int score)
+{
+  /* Returns true if the given score is high enough for a place in the
+  ** high score table
+  */
+  return (score>hscore_table[hscore_order[HIGH_SCORE_ENTRIES-1]].score);
+}
+
+void display_high_scores(int timed)
+{
+  char score_string[HIGH_SCORE_ENTRIES][10];
+  ubyte s;
+  int timer;
+  int finished;
+  int yoff;
+
+  yoff = (timed) ? 108:80;
+
+  if (timed) add_new_menu_item(msg[114],0,80,CENTRE+CYAN);
+
+  for (s=0; s<HIGH_SCORE_ENTRIES; s++) {
+    sprintf(score_string[s],"%d",hscore_table[hscore_order[s]].score);
+    add_new_menu_item(hscore_table[hscore_order[s]].name,40,yoff+22*s,LEFT_ALIGN+CYAN);
+    add_new_menu_item(score_string[s],280,yoff+22*s,RIGHT_ALIGN+CYAN);
+  }
+
+  if (!timed) highlighted_item(add_new_menu_item(msg[6],0,230,CENTRE+CYAN));
+  else highlighted_item(-1);
+
+  open_menu();
+
+  timer = 300;
+  finished = 0;
+
+  do {
+    /* Read inputs and move things */
+    read_menu_joy();
+
+    /* Draw things */
+    draw_menu_screen();
+
+    maintain_menu();
+
+    /* Display things */
+    swapscreen();
+
+    /* Finished? */
+    if (timed) {
+      timer--;
+      if (!timer || menu_joy_data) finished = 1;
+    }
+    else {
+      finished = menu_joy_data & FIRE1;
+    }
+  } while (!finished);
+
+  if (!timed) MENU_SEL_SFX;
+
+  close_menu();
+}
+
+void pre_level_text(int sector, int level)
+{
+  /* Give player splash screen on the coming level */
+  int timer;
+
+  if (sector == EPIS_USER) {
+    add_new_menu_item(msg[155],0,80,CENTRE+YELLOW);
+    add_new_menu_item(episode[user_1_plr_lev[level]].name,
+    		      0,120,CENTRE+GREEN);
+  }
+  else {
+    msg[78][16] = '1'+sector;
+    msg[79][15] = '1'+level;
+
+    add_new_menu_item(msg[78],0,80,CENTRE+YELLOW);
+    add_new_menu_item(msg[79],0,120,CENTRE+GREEN);
+  }
+
+  highlighted_item(add_new_menu_item(msg[80],0,200,CENTRE+CYAN));
+
+  timer = 150;
+
+  open_menu();
+
+  do {
+    draw_menu_screen();
+
+    maintain_menu();
+
+    swapscreen();
+
+    read_menu_joy();
+  } while ((timer--) && !(menu_joy_data&FIRE1));
+
+  MENU_SEL_SFX;
+
+  close_menu_completely(1);
+}
+
+void pre_sector_text(int sector)
+{
+  /* Give player splash screen about coming sector */
+  ubyte sec_offset[] = { 85, 81, 89, 93 };
+  ubyte mess;
+
+  for (mess=0; mess<4; mess++) {
+    add_new_menu_item(msg[sec_offset[sector]+mess],0,80+22*mess,
+    		      (mess) ? CENTRE+RED:CENTRE+YELLOW);
+  }
+
+  highlighted_item(add_new_menu_item(msg[6],0,230,CENTRE+CYAN));
+
+  open_menu();
+
+  do {
+    draw_menu_screen();
+
+    maintain_menu();
+
+    swapscreen();
+
+    read_menu_joy();
+  } while (!(menu_joy_data & FIRE1));
+
+  MENU_SEL_SFX;
+
+  close_menu();
+}
+
+void single_player_dead_screen()
+{
+  /* Our foolish player has died - display appropriate message */
+  int m;
+
+  for (m=0; m<5; m++) {
+    add_new_menu_item(msg[97+m],0,80+22*m,CENTRE+YELLOW);
+  }
+
+  highlighted_item(add_new_menu_item(msg[6],0,230,CENTRE+CYAN));
+
+  open_menu();
+
+  do {
+    draw_menu_screen();
+
+    maintain_menu();
+
+    swapscreen();
+
+    read_menu_joy();
+  } while (!(menu_joy_data & FIRE1));
+
+  MENU_SEL_SFX;
+
+  close_menu();
+}
+
+int another_multiplayer_go(void)
+{
+  /* Do they want to play again? (y/n)... non-zero indicates yes */
+  ubyte opt_id[2];
+  ubyte choice;
+
+  add_new_menu_item(msg[116],0,80,CENTRE+YELLOW);
+
+  for (choice=0; choice<2; choice++) {
+    opt_id[choice] =
+        add_new_menu_item(msg[117+choice],0,120+20*choice,CENTRE+CYAN);
+  }
+
+  highlighted_item(opt_id[1]);
+
+  choice=1;
+
+  open_menu();
+
+  do {
+    read_menu_joy();
+
+    old_menu_choice = choice;
+
+    if (menu_joy_data & UP) choice=0;
+    if (menu_joy_data & DOWN) choice=1;
+
+    if (choice!=old_menu_choice) MENU_MOV_SFX;
+
+    highlighted_item(opt_id[choice]);
+
+    draw_menu_screen();
+
+    maintain_menu();
+
+    swapscreen();
+  } while (!(menu_joy_data & FIRE1));
+
+  MENU_SEL_SFX;
+
+  if (choice==0) {
+    close_menu_completely(1);
+    return 1;
+  }
+  else {
+    close_menu();
+    return 0;
+  }
+}
+
+void single_player_end_of_game()
+{
+  /* The game has been completed - cue huge FMV sequence + CD music */
+
+  add_new_menu_item("CONGRATULATIONS",0,70,CENTRE+RED);
+  add_new_menu_item("on a job well done",0,90,CENTRE+RED);
+
+  add_new_menu_item("now the coffee machine is",0,120,CENTRE+GREEN);
+  add_new_menu_item("back online, we can begin",0,140,CENTRE+GREEN);
+  add_new_menu_item("clearing up the rest of",0,160,CENTRE+GREEN);
+  add_new_menu_item("the base. thanks very much",0,180,CENTRE+GREEN);
+  add_new_menu_item("for your help!",0,200,CENTRE+GREEN);
+
+  highlighted_item(add_new_menu_item(msg[6],0,230,CENTRE+CYAN));
+
+  open_menu();
+
+  do {
+    draw_menu_screen();
+
+    maintain_menu();
+
+    swapscreen();
+
+    read_menu_joy();
+  } while (!(menu_joy_data & FIRE1));
+
+  MENU_SEL_SFX;
+
+  close_menu();
+}
+
+void single_player_end_of_user_game()
+{
+  /* The game has been completed - cue huge FMV sequence + CD music */
+
+  add_new_menu_item("CONGRATULATIONS",0,70,CENTRE+RED);
+
+  add_new_menu_item("user levels complete",0,120,CENTRE+GREEN);
+
+  highlighted_item(add_new_menu_item(msg[6],0,230,CENTRE+CYAN));
+
+  open_menu();
+
+  do {
+    draw_menu_screen();
+
+    maintain_menu();
+
+    swapscreen();
+
+    read_menu_joy();
+  } while (!(menu_joy_data & FIRE1));
+
+  MENU_SEL_SFX;
+
+  close_menu();
+}
+
+void high_score_updater()
+{
+  int finished;
+
+  if (qualifies_for_high_score_table(score)) {
+    add_new_menu_item(msg[102],0,80,CENTRE+YELLOW);
+    add_new_menu_item(msg[103],0,105,CENTRE+RED);
+
+    text_entry_init(players[0].name,60,140,LEFT_ALIGN,10);
+
+    open_menu();
+
+    finished = 0;
+
+    do {
+      /* Update screen */
+      draw_menu_screen();
+
+      finished = text_entry_maintain();
+
+      maintain_menu();
+
+      swapscreen();
+    } while (!finished);
+
+    text_entry_end(players[0].name);
+
+    close_menu();
+
+    add_new_score(score,players[0].name);
+
+    display_high_scores(0);
+  }
+}
+
+void config_load()
+{
+  /* Attempt to load user information from preferences file.
+  ** This file may or may not be present.
+  */
+  FILE *config;
+  int  a,b,test, scr;
+
+  scr = MODE_13;
+
+  config = fopen(config_file,"rb");
+
+  if (config != NULL) {
+    /* Found the file! */
+
+    /* Get maximum jump level */
+    max_jump_level = fgetc(config);
+
+    /* Load keyboard defs */
+    for (a=0; a<4; a++) {
+      for (b=0; b<8; b++) {
+        game_keyboard_def[a][b] = fgetc(config);
+      }
+    }
+
+    /* Load player defs */
+    for (a=0; a<4; a++) {
+      /* Get players name */
+      b = 0;
+      do {
+        players[a].name[b] = fgetc(config);
+      } while (players[a].name[b++]);
+
+      /* Get control device preference */
+      players[a].ctrl_word = fgetc(config);
+
+      /* Change from joystick to keys if joystick not available */
+      if (!joy_available) {
+        if (ctrl_word_type[players[a].ctrl_word]==JOYSTICK) {
+          players[a].ctrl_word = a;
+        }
+      }
+    }
+
+    /* Load high score table */
+    for (a=0;a<HIGH_SCORE_ENTRIES;a++) {
+      /* Get score */
+      hscore_table[a].score = getw(config);
+
+      /* Get name */
+      b=0;
+      do {
+        hscore_table[a].name[b] = fgetc(config);
+      } while (hscore_table[a].name[b++]);
+
+      /* Get table order */
+      hscore_order[a] = fgetc(config);
+    }
+
+    /* Get maximum jump level check */
+    test = fgetc(config) ^ 42;
+
+    /* Has someone fiddled with the maximum jump level? */
+    if (test != max_jump_level) {
+      /* Apparently so. */
+      max_jump_level = 0;
+    }
+
+    /* Get audio config */
+    global_audio_stat = fgetc(config);
+    if (!feof(config)) {
+      /* Get fuse length */
+      fuse_length_index = fgetc(config);
+      fuse_length = fuse_lengths[fuse_length_index];
+    }
+    else global_audio_stat = 7; /* All enabled */
+
+    scr = fgetc(config);
+    if (feof(config)) {
+      /* screenres not contained in this config file */
+      scr = MODE_13;
+    }
+
+    test = fgetc(config);
+    if (!feof(config)) fast_menu = test;
+
+    /* Config read is complete */
+    fclose(config);
+  }
+
+  /* Change target mode */
+  change_mode_num(scr);
+}
+
+void config_save()
+{
+  /* Try to save our config information. We may or may not be able to
+  ** write the file. I hope arcfs doesn't choke on this.
+  */
+  FILE *config;
+  int a,b;
+
+  config = fopen(config_file,"wb");
+
+  if (config != NULL) {
+    /* We've opened the file - we should be able to write to it */
+
+    /* Write maximum jump level */
+    fputc(max_jump_level,config);
+
+    /* Write keyboard defs */
+    for (a=0; a<4; a++) {
+      for (b=0; b<8; b++) {
+        fputc(game_keyboard_def[a][b],config);
+      }
+    }
+
+    /* Write player defs */
+    for (a=0; a<4; a++) {
+      /* Write players name */
+      b = 0;
+      do {
+        fputc(players[a].name[b],config);
+      } while (players[a].name[b++]);
+
+      /* Write control device preference */
+      fputc(players[a].ctrl_word,config);
+    }
+
+    /* Write high score table */
+    for (a=0;a<HIGH_SCORE_ENTRIES;a++) {
+      /* Write score */
+      putw(hscore_table[a].score,config);
+
+      /* Write name */
+      b=0;
+      do {
+        fputc(hscore_table[a].name[b],config);
+      } while (hscore_table[a].name[b++]);
+
+      /* Write table order */
+      fputc(hscore_order[a],config);
+    }
+
+    /* Write maximum jump level check */
+    fputc(max_jump_level ^ 42,config);
+
+    /* Write audio config */
+    fputc(global_audio_stat,config);
+
+    /* Write fuse length */
+    fputc(fuse_length_index,config);
+
+    /* Write screen mode */
+    fputc(screenres,config);
+
+    /* Write fast menu status */
+    fputc(fast_menu,config);
+
+    /* Config write is complete */
+    fclose(config);
+  }
+
+  save_serial_choices();
+}
+
+/***************************************************************************/
+
+typedef enum {
+  CHUNK_EPISODE = 0,
+  CHUNK_GFX,
+  CHUNK_LEVEL,
+  CHUNK_LEVNAME,
+  CHUNK_LEVDESC,
+  CHUNK_LEVMAP,
+  CHUNK_LEVPLR,
+  CHUNK_LEVNME
+} CHUNK_TYPE;
+
+int   end_read_chunk_pos;
+PFILE *rbf;
+ubyte *mem_rbf;
+int   mem_rbf_offset;
+
+int   chunk_stack[8];
+int   chunk_stack_pos = 0;
+
+ubyte read_byte(void)
+{
+  return pak_fgetc(rbf);
+}
+
+int read_word(void)
+{
+  int word;
+
+  word = read_byte();
+  word |= read_byte()<<8;
+  word |= read_byte()<<16;
+  word |= read_byte()<<24;
+
+  return word;
+}
+
+void read_block(void *to, int len)
+{
+  int l;
+
+  for (l=0; l<len; l++) {
+    *(((char *) to) + l) = read_byte();
+  }
+}
+
+CHUNK_TYPE recog_chunk(void)
+{
+  CHUNK_TYPE type;
+
+  /* Get chunk type */
+  type = read_byte();
+
+  /* Get chunk length to calculate end of chunk */
+  end_read_chunk_pos = (int) pak_ftell(rbf);
+  end_read_chunk_pos += read_word();
+  chunk_stack[chunk_stack_pos++] = end_read_chunk_pos;
+
+  return type;
+}
+
+void goto_end_of_chunk(void)
+{
+  pak_fseek(rbf,chunk_stack[--chunk_stack_pos],0);
+  end_read_chunk_pos = chunk_stack[chunk_stack_pos-1];
+}
+
+ubyte mem_read_byte(void)
+{
+  ubyte b;
+
+  b = *(mem_rbf + mem_rbf_offset);
+  mem_rbf_offset++;
+
+  return b;
+}
+
+int mem_read_word(void)
+{
+  int word;
+
+  word = mem_read_byte();
+  word |= mem_read_byte()<<8;
+  word |= mem_read_byte()<<16;
+  word |= mem_read_byte()<<24;
+
+  return word;
+}
+
+void mem_read_block(void *to, int len)
+{
+  int l;
+
+  for (l=0; l<len; l++) {
+    *(((char *) to) + l) = mem_read_byte();
+  }
+}
+
+CHUNK_TYPE mem_recog_chunk(void)
+{
+  CHUNK_TYPE type;
+
+  /* Get chunk type */
+  type = mem_read_byte();
+
+  /* Get chunk length to calculate end of chunk */
+  end_read_chunk_pos = mem_rbf_offset;
+  end_read_chunk_pos += mem_read_word();
+  chunk_stack[chunk_stack_pos++] = end_read_chunk_pos;
+
+  return type;
+}
+
+void mem_goto_end_of_chunk(void)
+{
+  mem_rbf_offset = chunk_stack[--chunk_stack_pos];
+  end_read_chunk_pos = chunk_stack[chunk_stack_pos-1];
+}
+
+void remap_misc_tiles(void)
+{
+  int s, x, y;
+  char *dest, *src;
+  pixel datum;
+
+  src = (char *) &floor_tiles[0];
+
+  /* Make blockage explosion frames */
+  for (s=0; s<20; s++) {
+    dest = (char *) &floor_tiles[(4*16)*(33+s)];
+
+    for (y=0; y<16; y++) {
+      for (x=0; x<16; x++) {
+        datum = enemy_gfx[21+(s>>2)][s&3][y][x];
+
+        *(dest + (y*16) + x) = (datum==0) ? *(src + (y*16) + x):datum;
+      }
+    }
+  }
+
+  /* Make bonus tiles */
+  for (s=0; s<9; s++) {
+    dest = (char *) &floor_tiles[(4*16)*(53+s)];
+
+    for (y=0; y<16; y++) {
+      for (x=0; x<16; x++) {
+        datum = misc_tiles[s][y][x];
+
+        *(dest + (y*16) + x) = (datum==0) ? *(src + (y*16) + x):datum;
+      }
+    }
+  }
+
+  for (s=0; s<140; s++) {
+    dest = (char *) &floor_tiles[(4*16)*(64+s)];
+
+    for (y=0; y<16; y++) {
+      for (x=0; x<16; x++) {
+        datum = expl_gfx[s][y][x];
+        *(dest + (y*16) + x) = (datum==0) ? *(src + (y*16) + x):datum;
+      }
+    }
+  }
+
+#ifndef NO_LOGFILE
+  logfile("tiles remapped\n");
+#endif
+}
+
+void revive_user_levels(void)
+{
+  int s, v;
+
+  for (s=0; s<71; s++) {
+    v = (s<=32) ? s:(s+29);
+    if (v>=64) v+=140;
+    memcpy(&floor_tiles[(4*16)*(v)],
+           &user_gfx[s][0][0], 16*16);
+  }
+
+  /* Alter sprites that use floor background */
+  remap_misc_tiles();
+
+  memcpy(&episode, &user_episode, sizeof(ED_LEVEL)*16);
+
+  curr_episode = EPIS_USER;
+}
+
+BOOL decode_new_format_level(PFILE *fp, BOOL user)
+{
+  int s, l, p, e, v;
+  CHUNK_TYPE chunk;
+  ubyte remap_nme[] = {
+    NME_BOMB_EATER_RED,
+    NME_BOMB_EATER_GREEN,
+    NME_GHOST,
+    NME_TARGETING_GHOST,
+    NME_WANDERING_BOMB,
+    NME_TARGETING_BOMB,
+    NME_SPRYT_H,
+    NME_SPRYT_V,
+    NME_SPRYT_LW
+  };
+
+  rbf = fp;
+
+  /* Reset chunk stack position, just in case */
+  chunk_stack_pos = 0;
+
+  /* Open episode chunk */
+  chunk = recog_chunk();
+
+  /* Verify we've got a valid episode file */
+  if (chunk == CHUNK_EPISODE) {
+    if (read_word() != 'MQep') {
+      pak_fclose(fp);
+      return FALSE;
+    }
+  }
+  else {
+    pak_fclose(fp);
+    return FALSE;
+  }
+
+  printf("Recognised new format file\n");
+
+  do {
+    chunk = recog_chunk();
+
+    switch (chunk) {
+      case CHUNK_GFX :
+        /* Copy graphics data */
+        for (s=0; s<71; s++) {
+          if (user) {
+            read_block(&user_gfx[s][0][0], 16*16);
+            v = (s<=32) ? s:(s+29);
+            if (v>=64) v+=140;
+            memcpy(&floor_tiles[(4*16)*(v)],
+            	   &user_gfx[s][0][0], 16*16);
+          }
+          else {
+            v = (s<=32) ? s:(s+29);
+            if (v>=64) v+=140;
+            read_block(&floor_tiles[(4*16)*(v)], 16*16);
+          }
+        }
+
+        break;
+
+      case CHUNK_LEVEL :
+        /* Read level number */
+        l = read_byte();
+
+        do {
+          chunk = recog_chunk();
+
+          switch (chunk) {
+            case CHUNK_LEVNAME :
+              s=0;
+              do {
+                episode[l].name[s] = read_byte();
+               } while (episode[l].name[s++]);
+
+              break;
+
+            case CHUNK_LEVDESC :
+              episode[l].battle = read_byte();
+              episode[l].active = read_byte();
+              break;
+
+            case CHUNK_LEVMAP :
+              read_block(&episode[l].map, 21*32);
+              break;
+
+            case CHUNK_LEVPLR :
+              for (p=0; p<4; p++) {
+                episode[l].plr[p].x = read_byte();
+                episode[l].plr[p].y = read_byte();
+              }
+
+              break;
+
+            case CHUNK_LEVNME :
+#ifndef NO_LOGFILE
+              logfile("Level %d - pos %d, end %d\n",l,pak_ftell(rbf),end_read_chunk_pos);
+#endif
+              for (e=0; pak_ftell(rbf)!=end_read_chunk_pos; e++) {
+                episode[l].nme[e].type = remap_nme[read_byte()];
+                episode[l].nme[e].pos.x = read_byte();
+                episode[l].nme[e].pos.y = read_byte();
+                episode[l].nme[e].active = TRUE;
+              }
+
+              for (; e<64; e++) {
+                episode[l].nme[e].active = FALSE;
+              }
+
+              break;
+          }
+
+          goto_end_of_chunk();
+        } while (pak_ftell(rbf) != end_read_chunk_pos);
+
+        break;
+    }
+
+    goto_end_of_chunk();
+  } while (pak_ftell(rbf) != end_read_chunk_pos);
+
+  /* Skip to end of file */
+  goto_end_of_chunk();
+
+  if (user) {
+    /* Copy episode data to user episode */
+    memcpy(&user_episode, &episode, sizeof(ED_LEVEL)*16);
+
+    /* Count levels */
+    user_1_plr_lev_count = user_battle_lev_count = 0;
+
+    for (l=0; l<16; l++) {
+      if (episode[l].active) {
+        if (episode[l].battle) {
+          user_battle_lev[user_battle_lev_count++] = l;
+        }
+        else {
+          user_1_plr_lev[user_1_plr_lev_count++] = l;
+        }
+      }
+    }
+
+    curr_episode = EPIS_USER;
+  }
+
+  /* Alter sprites that use floor background */
+  remap_misc_tiles();
+
+  pak_fclose(fp);
+
+  /* Return success */
+  return TRUE;
+}
+
+BOOL decode_new_format_level_from_mem(ubyte *addr)
+{
+  int s, l, p, e, v;
+  CHUNK_TYPE chunk;
+  ubyte remap_nme[] = {
+    NME_BOMB_EATER_RED,
+    NME_BOMB_EATER_GREEN,
+    NME_GHOST,
+    NME_TARGETING_GHOST,
+    NME_WANDERING_BOMB,
+    NME_TARGETING_BOMB,
+    NME_SPRYT_H,
+    NME_SPRYT_V,
+    NME_SPRYT_LW
+  };
+
+  mem_rbf = addr;
+  mem_rbf_offset = 0;
+
+  /* Reset chunk stack position, just in case */
+  chunk_stack_pos = 0;
+
+  /* Open episode chunk */
+  chunk = mem_recog_chunk();
+
+  /* Verify we've got a valid episode file */
+  if (chunk == CHUNK_EPISODE) {
+    if (mem_read_word() != 'MQep') {
+      return FALSE;
+    }
+  }
+  else {
+    return FALSE;
+  }
+
+  printf("Recognised new format file\n");
+
+  do {
+    chunk = mem_recog_chunk();
+
+    switch (chunk) {
+      case CHUNK_GFX :
+        /* Copy graphics data */
+        for (s=0; s<71; s++) {
+          mem_read_block(&user_gfx[s][0][0], 16*16);
+          v = (s<=32) ? s:(s+29);
+          if (v>=64) v+=140;
+          memcpy(&floor_tiles[(4*16)*(v)],
+            	 &user_gfx[s][0][0], 16*16);
+        }
+
+        break;
+
+      case CHUNK_LEVEL :
+        /* Read level number */
+        l = mem_read_byte();
+
+        do {
+          chunk = mem_recog_chunk();
+
+          switch (chunk) {
+            case CHUNK_LEVNAME :
+              s=0;
+              do {
+                episode[l].name[s] = mem_read_byte();
+               } while (episode[l].name[s++]);
+
+              break;
+
+            case CHUNK_LEVDESC :
+              episode[l].battle = mem_read_byte();
+              episode[l].active = mem_read_byte();
+              break;
+
+            case CHUNK_LEVMAP :
+              mem_read_block(&episode[l].map, 21*32);
+              break;
+
+            case CHUNK_LEVPLR :
+              for (p=0; p<4; p++) {
+                episode[l].plr[p].x = mem_read_byte();
+                episode[l].plr[p].y = mem_read_byte();
+              }
+
+              break;
+
+            case CHUNK_LEVNME :
+#ifndef NO_LOGFILE
+              logfile("Level %d - pos %d, end %d\n",l,mem_rbf_offset,end_read_chunk_pos);
+#endif
+              for (e=0; mem_rbf_offset!=end_read_chunk_pos; e++) {
+                episode[l].nme[e].type = remap_nme[mem_read_byte()];
+                episode[l].nme[e].pos.x = mem_read_byte();
+                episode[l].nme[e].pos.y = mem_read_byte();
+                episode[l].nme[e].active = TRUE;
+              }
+
+              for (; e<64; e++) {
+                episode[l].nme[e].active = FALSE;
+              }
+
+              break;
+          }
+
+          mem_goto_end_of_chunk();
+        } while (mem_rbf_offset != end_read_chunk_pos);
+
+        break;
+    }
+
+    mem_goto_end_of_chunk();
+  } while (mem_rbf_offset != end_read_chunk_pos);
+
+  /* Skip to end of file */
+  mem_goto_end_of_chunk();
+
+  /* Copy episode data to user episode */
+  memcpy(&user_episode, &episode, sizeof(ED_LEVEL)*16);
+
+  /* Count levels */
+  user_1_plr_lev_count = user_battle_lev_count = 0;
+
+  for (l=0; l<16; l++) {
+    if (episode[l].active) {
+      if (episode[l].battle) {
+        user_battle_lev[user_battle_lev_count++] = l;
+      }
+      else {
+        user_1_plr_lev[user_1_plr_lev_count++] = l;
+      }
+    }
+  }
+
+  curr_episode = EPIS_USER;
+
+  /* Alter sprites that use floor background */
+  remap_misc_tiles();
+
+  /* Return success */
+  return TRUE;
+}
+
+/***************************************************************************/
+
+ubyte pipe_map[21][32];
+ED_LEVEL *lcl_lvl;
+
+ubyte pipe_check[] = {
+  0,
+  LEFT+RIGHT,
+  UP+DOWN,
+  LEFT+RIGHT+UP+DOWN,
+  UP+LEFT,
+  DOWN+LEFT,
+  UP+RIGHT,
+  DOWN+RIGHT,
+  RIGHT,
+  LEFT,
+  DOWN,
+  UP
+};
+
+void trace_pipe(int x, int y, int num)
+{
+  ubyte type;
+
+  type = lcl_lvl->map[x][y];
+
+  if (pipe_map[x][y] == 0 && type>0 && type<12) {
+    pipe_map[x][y] = num;
+
+    type = pipe_check[type];
+
+    if (type) {
+      if (type & LEFT) trace_pipe(x-1,y,num);
+      if (type & RIGHT) trace_pipe(x+1,y,num);
+      if (type & UP) trace_pipe(x,y+1,num);
+      if (type & DOWN) trace_pipe(x,y-1,num);
+    }
+  }
+}
+
+void setup_pipe_connections(ED_LEVEL *lev)
+{
+  int x,y;
+  ubyte pipe_ref;
+  ubyte pipe_end[64][2];
+  ubyte index, pipe_num;
+  ubyte t;
+
+  /* Set local global pointer to level */
+  lcl_lvl = lev;
+
+  /* Clear pipe map */
+  for (x=0; x<21; x++) {
+    for (y=0; y<32; y++) {
+      pipe_map[x][y] = 0;
+    }
+  }
+
+  /* Set first pipe network reference number */
+  pipe_ref = 1;
+
+  for (y=1; y<32; y++) {
+    for (x=1; x<21; x++) {
+      t = lev->map[x][y];
+
+      if (pipe_map[x][y]==0 && t>0 && t<12) {
+        /* It's part of an unmapped pipe */
+        trace_pipe(x,y,pipe_ref++);
+      }
+    }
+  }
+
+  /* All pipe networks should now be marked with id's unique to isolated
+  ** sections
+  */
+
+  /* Set map details of pipe endings per pipe network */
+  while (--pipe_ref) {
+    index = 0;
+    for (y=1; y<32; y++) {
+      for (x=1; x<21; x++) {
+        if (pipe_map[x][y] == pipe_ref &&
+            lev->map[x][y] >= 8 &&
+            lev->map[x][y] <= 11) {
+
+	  if (index<64) {
+            /* Add this pipe ending to the list */
+            pipe_end[index][0] = x;
+            pipe_end[index][1] = 31-y;
+
+            index++;
+          }
+          else {
+            /* Stupid number of pipe ends! Map to themselves */
+            floor_map[31-y][x].extra1 = x;
+            floor_map[31-y][x].extra2 = 31-y;
+          }
+        }
+      }
+    }
+
+    pipe_num = index;
+
+    /* Link up pipe network */
+    for (index=0; index<pipe_num; index++) {
+      floor_map[pipe_end[index][1]][pipe_end[index][0]].extra1 =
+      				        pipe_end[(index+1)%pipe_num][0];
+      floor_map[pipe_end[index][1]][pipe_end[index][0]].extra2 =
+      					pipe_end[(index+1)%pipe_num][1];
+    }
+  }
+}
+
+

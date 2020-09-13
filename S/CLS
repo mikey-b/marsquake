@@ -1,0 +1,51 @@
+scr		RN	0
+horizon		RN	1
+r2		RN	2
+r3		RN	3
+r4		RN	4
+r5		RN	5
+r6		RN	6
+r7		RN	7
+r8		RN	8
+r9		RN	9
+r10		RN	10
+r11		RN	11
+r12		RN	12
+sp		RN	13
+lr              RN      14
+pc              RN      15
+
+                AREA    |cls|, CODE, COMDEF, READONLY
+
+		B	cls1
+
+blanks
+		DCD 0,0,0,0,0,0,0,0,0,0
+
+cls1
+		; On entry,	r0 contains screen memory address
+		;		r1 contains horizon position
+		;		 - not yet implemented, not used by code
+
+                ; save registers
+                STMFD	sp!,{r2,r3,r4,r5,r6,r7,r8,r9,r10}
+
+                ADR	r2,blanks
+                LDMIA	r2,{r3,r4,r5,r6,r7,r8,r9,r10}
+
+		MOV	r2,#((640*480)>>5)	; mode dimensions
+
+blankloop
+                STMIA	scr!,{r3,r4,r5,r6,r7,r8,r9,r10}
+                STMIA	scr!,{r3,r4,r5,r6,r7,r8,r9,r10}
+                STMIA	scr!,{r3,r4,r5,r6,r7,r8,r9,r10}
+                STMIA	scr!,{r3,r4,r5,r6,r7,r8,r9,r10}
+
+		SUBS	r2,r2,#1
+		BNE	blankloop
+
+		LDMFD	sp!,{r2,r3,r4,r5,r6,r7,r8,r9,r10}
+                MOVS    pc,lr		; *** exit ***
+
+
+		END

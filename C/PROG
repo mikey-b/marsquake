@@ -1,0 +1,1822 @@
+/**************************************************************************
+**
+** Project MQ2
+**
+** Moonquake 2 : Marsquake
+**
+** (C) Paul Taylor 1996
+**
+***************************************************************************
+
+Code started on 3/3/96
+
+10/3/96 -  GFX : Created 29 floor tiles (16x16)
+	   Basic floor tile, core, pipes and conveyors.
+	   Thrashed down basic floor code, but not debugged, run or even
+	   assembled/compiled!
+
+17/3/96 -  Debugged basic floor code.
+	   Lordy! No-one told me the arch is a little-endian machine!
+	   Created simple player animation.
+
+**************************************************************************/
+
+/*** Libraries ***/
+
+#define INSTANTIATE_VARS
+
+#include "mqhead.h"
+#include "demo_map.h"
+#include "pakfs.h"
+
+#include "debug.h"
+
+/* #define SPEEDO */
+
+#define TIME_LOCK
+
+/*** Function definitions ************************************************/
+void check_map(void);
+void open_exit(void);
+void screen_mode_info(void);
+
+
+void mqprint(char *string, int x, int y, int alignment, int col)
+{
+  int sx, l;
+
+  l = get_string_width(string);
+
+  /* printf("string : '%s', width %d\n",string,l); */
+
+  switch (alignment) {
+    case LEFT_ALIGN  : sx = x; break;
+    case CENTRE	     : sx = (HRES>>1)-(l>>1); break;
+    case RIGHT_ALIGN : sx = x-l;
+  }
+
+  if (screenres == MODE_13) {
+    if (col==HIGHLIGHT)
+      draw_string_highlight(string,sx,y,flashcol[(hflash>>4)&0xf]);
+    else
+      draw_string(string,sx,y,col);
+  }
+  else {
+    if (col==HIGHLIGHT)
+      H_draw_string_highlight(string,sx,y,flashcol[(hflash>>4)&0xf]);
+    else
+      H_draw_string(string,sx,y,col);
+  }
+}
+
+void scrprintf(int x, int y, int col, char *FormatString, ...)
+{
+  char 	   msgbuffer[256];
+  va_list  arglist;
+
+  va_start(arglist, FormatString);
+  vsprintf(msgbuffer, FormatString, arglist);
+  va_end(arglist);
+
+  mqprint(msgbuffer, x, y, LEFT_ALIGN, col);
+}
+
+void read_menu_joy(void)
+{
+  read_keyboard(0,1,-1,-1);
+
+  new_joy_data = ctrl_word_table[0];
+
+  if (old_joy_data & new_joy_data) menu_joy_data = 0;
+  else menu_joy_data = new_joy_data;
+
+  old_joy_data = new_joy_data;
+}
+
+void swapscreen(void)
+{
+    int d;
+#ifdef ENABLE_SCREENDUMP
+    _kernel_swi_regs r;
+#endif
+
+    osbyte(113,ticker,0);	/* display new screen */
+
+#ifndef SPEEDO
+    osbyte(19,0,0);		/* wait for vsync */
+#endif
+
+    ticker ^= 3;		/* ticks 1 - 2 - 1 - 2 - ... */
+    scrmem = screenbank[ticker];
+    scrmem_arena = scrmem+320*((screenres==MODE_49) ? 48:40)+8;
+
+    frame_time++;
+
+    for (d=0;d<4;d++) {
+      hflash+=hflashinc;
+      if (hflash==255 || hflash==32) hflashinc=-hflashinc;
+    }
+
+#ifdef ENABLE_SCREENDUMP
+    _kernel_swi(OS_Mouse,&r,&r);
+    if (r.r[2]==1) scrdump();
+#endif
+}
+
+void swapscreen_novsync(void)
+{
+    int d;
+#ifdef ENABLE_SCREENDUMP
+    _kernel_swi_regs r;
+#endif
+
+    osbyte(113,ticker,0);	/* display new screen */
+
+    ticker ^= 3;		/* ticks 1 - 2 - 1 - 2 - ... */
+    scrmem = screenbank[ticker];
+    scrmem_arena = scrmem+320*((screenres==MODE_49) ? 48:40)+8;
+
+    frame_time++;
+
+    for (d=0;d<4;d++) {
+      hflash+=hflashinc;
+      if (hflash==255 || hflash==32) hflashinc=-hflashinc;
+    }
+
+#ifdef ENABLE_SCREENDUMP
+    _kernel_swi(OS_Mouse,&r,&r);
+    if (r.r[2]==1) scrdump();
+#endif
+}
+
+void beep()
+{
+#ifndef NO_PRINTF
+    printf("%c",7);
+#endif
+}
+
+int remap_colour(int source_col, int pal)
+{
+  ubyte source_pal[] = { 0,171,170,139,138,137,136 };
+  ubyte other_pals[][7] = {
+    0,55,54,53,52,19,18,
+    0,67,66,65,64,35,34,
+    0,191,190,159,158,157,156
+  };
+  int c;
+
+  for (c=0; c<7 && source_pal[c]!=source_col; c++);
+
+  return (c==7) ? source_col:other_pals[pal-1][c];
+}
+
+void init_bloke_gfx(void)
+{
+  PFILE *source;
+  int  datum, pos, x,y,frame,dir;
+
+#ifndef NO_PRINTF
+  printf("Loading player graphics...\n");
+#endif
+
+  if ((source=pak_fopen("<Mars$Dir>.d.rawblokes","rb"))==NULL) {
+#ifndef NO_PRINTF
+    printf("Error loading player sprites - program halted\n");
+#endif
+    exit(0);
+  }
+
+  for (frame=0;frame<64;frame++) {
+    for (dir = 0; dir<4; dir++) {
+      for (y=0; y<16; y++) {
+        for (x=0; x<16; x++) {
+	  datum = pak_fgetc(source);
+
+          if (!pak_feof(source)) {
+      	    if (datum==91) datum=0;      /* make background colour 0 */
+      	    bloke_gfx[frame][dir][y][x] = datum;
+	    pos++;
+          }
+        }
+      }
+    }
+  }
+
+  pak_fclose(source);
+
+#ifndef NO_PRINTF
+  printf("Loaded bloke frames successfully\n");
+#endif
+
+  /* player palettes
+  **   Player 1 - blue
+  **   Player 2 - red
+  **   Player 3 - green
+  **   Player 4 - purple
+  */
+
+}
+
+void init_bomb_gfx(void)
+{
+  PFILE *source;
+  int  datum, pos, x,y,frame,pal;
+
+#ifndef NO_PRINTF
+  printf("Loading bomb graphics...\n");
+#endif
+
+  if ((source=pak_fopen("<Mars$Dir>.d.rawbombs","rb"))==NULL) {
+#ifndef NO_PRINTF
+    printf("Error loading bomb sprites - program halted\n");
+#endif
+    exit(0);
+  }
+
+  /* We're going to exploit C's lack of range checking on arrays by
+  ** writing to the whole bomb gfx array initially by just changing
+  ** the lowest index.
+  */
+  pos = 0;
+  do {
+    datum = pak_fgetc(source);
+
+    if (!pak_feof(source)) {
+      if (datum==91) datum=0;          /* make background colour 0 */
+      bomb_gfx[0][0][0][pos] = datum;
+      pos++;
+      /* printf("%x\n",datum); */
+    }
+  } while (!pak_feof(source));
+
+  pak_fclose(source);
+
+#ifndef NO_PRINTF
+  printf("Loaded %d bombs successfully\n",pos>>8);
+#endif
+
+  /* Set up 4 player palettes
+  **   Player 1 - blue
+  **   Player 2 - red
+  **   Player 3 - green
+  **   Player 4 - purple
+  */
+
+  for (pal = 1; pal<4; pal++) {
+    for (frame = 0; frame<24; frame++) {
+      for (y=0; y<16; y++) {
+        for (x=0; x<16; x++) {
+          bomb_gfx[pal][frame][x][y] = remap_colour(bomb_gfx[0][frame][x][y],pal);
+        }
+      }
+    }
+  }
+}
+
+void describe_bombs()
+{
+#ifndef NO_PRINTF
+  int b,n;
+
+  n = 0;
+
+  for (b=0;b<64;b++) {
+    if (bombs[b].status&(1<<4)) {
+      printf("Bomb @ %x,%x (s %x) (o %x) (p %x)\n",bombs[b].xpos,bombs[b].ypos,bombs[b].status,bombs[b].owner,bombs[b].pushed_by);
+      n = 1;
+    }
+  }
+
+  if (n) printf("--\n");
+#endif
+}
+
+void cold_start(void)
+{
+  /* Initialisation routines (gfx loading, etc) to be carried out once,
+  ** when the game is loaded.
+  */
+  check_mode();
+
+  init_pakfs("<Mars$Dir>.Data");
+
+  currscrmode = -1;
+  screenres = MODE_13;
+
+  /* No background graphics loaded at this stage ***obsolete?*** */
+  gfx_set_loaded = 255;
+
+  /* No levels loaded yet */
+  user_1_plr_lev_count = 0;
+  user_battle_lev_count = 0;
+  curr_episode = EPIS_NONE;
+  user_levels_loaded = FALSE;
+
+  /* Detect if joystick SWI is available */
+  joy_available = joy_detect();
+
+  /* Perform manual linking */
+  draw_floor_data[0] = (int) &floor_map[0];
+  draw_floor_data[2] = (int) &scrmem_arena;
+
+  cheat_mode = FALSE;
+
+#ifndef NO_PRINTF
+  printf("Floor at %08x\n",(int)floor_map);
+#endif
+
+  /* Load graphics data */
+  init_gfx();
+
+  /* Load audio data */
+  load_audio_data();
+
+  /* Initialise high score table with defaults */
+  init_high_scores();
+
+  /* Set up (example map) sentinel border in map data */
+  init_map();
+
+  max_jump_level = 0;
+  battle_level = -1;
+  battle_lives = 1;
+  battle_rounds = 1;
+  bonus_quant = 2;
+  fast_menu = 0;
+
+  /* Set up example player */
+  init_bloke_gfx();
+  init_blokes();
+
+  /* Set up bombs */
+  init_bombs();
+  init_bomb_gfx();
+
+  hflash = 32;
+  hflashinc = 1;
+
+  fuse_length_index = FUSE_LONG;
+  fuse_length = fuse_lengths[FUSE_LONG];
+
+  global_audio_stat = GAME_MUS_ENABLED|MENU_MUS_ENABLED|SOUND_FX_ENABLED;
+
+  /* Let's see if we've got a config file */
+  config_load();
+
+  init_menu_system();
+
+  played_intro = FALSE;
+}
+
+void warm_start(void)
+{
+  /* Initialisation routines to be carried out every time the game is
+  ** started from its desktop icon.
+  */
+
+  /* See if mode 49 has magically become available */
+  check_mode();
+
+  /* Disable escape key */
+  /*osbyte(229,1,0);*/
+  reset_serial_link();
+
+  /* Detect if joystick SWI is available */
+  joy_available = joy_detect();
+
+  set_keys_for_menus();
+
+  /*reinit_screen();*/
+  change_mode(screenres);
+
+  /* Revive digital symphony */
+  dsym_resetparams();
+}
+
+void shutdown_temporary(void)
+{
+  clear_keyboard();
+
+  /* Re-enable the escape key */
+  /*osbyte(229,0,0);*/
+
+  /* Screenmode will change */
+  currscrmode = MODE_WIMP;
+}
+
+void shutdown_permanent(void)
+{
+  config_save();
+
+  clear_keyboard();
+
+  check_map();
+
+  describe_bombs();
+
+  /* Kill off digital symphony */
+  dsym_time_to_die();
+}
+
+void game_main(void)
+{
+  warm_start();
+
+  if (!played_intro) {
+    demo_menu();
+    played_intro = TRUE;
+  }
+
+  main_menu();
+
+  /* Game is over - shutdown */
+  shutdown_temporary();
+
+  if (is_escape_condition()) {
+    ack_escape_condition();
+  }
+}
+
+int old_main(int argc, char *argv[])
+{
+  cold_start();
+
+  game_main();
+
+  shutdown_permanent();
+
+  return 0;
+}
+
+void init_bonuses(void)
+{
+  int b;
+
+  for (b=0; b<BONUS_COUNT; b++) {
+    /* This bonus is not allocated */
+    bonus_array[b].status = 0;
+  }
+}
+
+int game(int game_type)
+{
+  int plr, alive;
+  int game_over;
+  _kernel_swi_regs r;
+  /*char debugstr[32];*/
+  int start_draw, end_draw, frames;
+  int shutdown_timer;
+  int oldscore;
+  int kbdev[4];
+  int paused, igmenu;
+  ubyte opt_id[2];
+  ubyte opts[3] = { 132, 105, 106 };
+  ubyte opt,choice;
+  int msx, msy;
+  ubyte joys;
+  BOOL slink_verify;
+
+  global_game_type = game_type;
+
+  set_keys_for_game();
+
+  dsym_set_stereo_for_game();
+
+  dsym_start_song_warm(GAME_TUNE_1);
+
+  /* Plug in keyboard devices */
+  slink_verify = FALSE;
+  for (plr=joys=0; plr<4; plr++) {
+    if (plr_type[plr]==PLR_HUMAN) {
+      kbdev[plr] = (ctrl_word_type[players[plr].ctrl_word]==KEYBOARD)
+      		    ? plr:-1;
+
+      if (ctrl_word_type[players[plr].ctrl_word]==JOYSTICK) {
+        /* Which joysticks do we need to read? */
+        joys |= 1<<(players[plr].ctrl_word-4);
+      }
+    }
+    else kbdev[plr] = -1;
+
+    if (plr_type[plr]==PLR_REMOTE) slink_verify = TRUE;
+  }
+
+  if (serial_linked && !slink_verify) {
+    /* Something's not quite right */
+    serial_linked = FALSE;
+    logfile("Warning : serial linked nulled because of no remote players\n");
+  }
+
+  init_bonuses();
+
+  set_data_for_game();
+
+  delay_timer = 0;
+
+  shutdown_timer = END_OF_GAME_DELAY;
+
+  if (game_type == SINGLE_PLAYER) {
+    /* Update score message */
+    if (game_level == 0 & game_sector == 0) new_hud_mess(msg[119],0);
+    sprintf(scorestring,"%12d",score);
+    hud_mess[0].changed = 1;
+  }
+
+  serial_broken = FALSE;
+
+  if (serial_linked) {
+    if (serial_master) {
+      ubyte b, err;
+
+      mqprint(msg[153],0,100,CENTRE,CYAN);
+      swapscreen();
+
+      /* Wait for 'G' signal (tolerate up to 16 bad chars) */
+      err = 0;
+      do {
+        b = serial_get_byte_wait(60*100);
+
+  	if (timed_out) serial_broken = TRUE;
+        if (b!='G') err++;
+      } while (b!='G' && err<16 && !serial_broken);
+
+      if (err==16) serial_broken = TRUE;
+
+      /* Send return 'o' signal */
+      serial_send_byte_wait('o',20);
+    }
+    else {
+      ubyte b,err;
+
+      mqprint(msg[151],0,100,CENTRE,CYAN);
+      swapscreen();
+
+      /* Send initial 'G' signal */
+      serial_send_byte_wait('G',20);
+
+      /* Wait for 'o' signal (tolerate up to 16 bad chars) */
+      err = 0;
+      do {
+        b = serial_get_byte_wait(60*100);
+
+  	if (timed_out) serial_broken = TRUE;
+        if (b!='o') err++;
+      } while (b!='o' && err<16 && !serial_broken);
+    }
+  }
+
+  game_over = exit_open = paused = igmenu = 0;
+  _kernel_swi(OS_ReadMonotonicTime,&r,&r);
+  start_draw = r.r[0];
+  do {
+    if (game_type==BATTLE_MODE) {
+      /* Stop screen scrolling */
+      global_y = 0;
+    }
+    else {
+      global_y = (players[0].ypos<<4)-((VIS_TILES_V>>1)<<8);
+    }
+
+    if (global_y<0) global_y=0;
+    else {
+      if (((global_y>>8)+VIS_TILES_V)>=arena_depth) {
+        global_y = (arena_depth-VIS_TILES_V)<<8;
+      }
+    }
+
+    if (screenres == MODE_13) {
+      draw_floor(global_y,20,(int)&floor_tiles[0]);
+      draw_all_bombs(global_y);
+      draw_all_bonuses(global_y);
+      draw_all_enemies(global_y);
+    }
+    else {
+      H_draw_floor(global_y,20,(int)&floor_tiles[0]);
+      H_draw_all_bombs(global_y);
+      H_draw_all_bonuses(global_y);
+      H_draw_all_enemies(global_y);
+    }
+
+    for (plr=alive=0; plr<4; plr++) {
+      if (plr_type[plr] &&
+      	  !((players[plr].status>>4)==5 && players[plr].anim_ctr==255)) {
+
+        alive++;
+
+        if ((players[plr].status&(1<<3))==0 || ticker==1) {
+          if (screenres == MODE_13)
+            drawaman(global_y,&players[plr]);
+          else
+            H_drawaman(global_y,&players[plr]);
+        }
+      }
+    }
+
+    if (screenres == MODE_13) {
+      draw_adv_exp(global_y);
+      draw_flour_exp(global_y);
+    }
+    else {
+      H_draw_adv_exp(global_y);
+      H_draw_flour_exp(global_y);
+    }
+
+    /*sprintf(debugstr,"t:%x",players[0].bombs);
+    draw_string(debugstr,20,180,BLUE);
+    sprintf(debugstr,"t:%x",players[0].bombs_layed);
+    draw_string(debugstr,20,200,BLUE);*/
+    /*sprintf(debugstr,"%x",ctrl_word_table[0]);
+    draw_string(debugstr,20,200,BLUE);*/
+
+    draw_hud_mess();
+
+    /* Mode 49 screen needs scaling */
+    if (screenres == MODE_49) mode_49_scale();
+
+    for (plr=0; plr<4; plr++) {
+      if (plr_type[plr]==PLR_HUMAN &&
+      	  !((players[plr].status>>4)==5 && players[plr].anim_ctr==255)) {
+
+        if (players[plr].ctrl_word == 8) {
+          /* Mouse control! Show direction */
+          int c = 131;
+
+          switch (read_mouse_dir[0]) {
+            case 1 : c=128; break;
+            case 2 : c=129; break;
+            case 4 : c=130;
+          }
+
+	  if (screenres == MODE_13) {
+    	    draw_char((char) c,
+    	      	     players[plr].xpos-7,
+    	      	     32+(players[plr].ypos-(global_y>>4)),0);
+    	  }
+    	  else {
+    	    H_draw_char((char) c,
+    	      	     players[plr].xpos-7,
+    	      	     32+(players[plr].ypos-(global_y>>4)),0);
+    	  }
+  	}
+      }
+    }
+
+    if (paused) maintain_menu();
+    else if (igmenu) {
+      highlighted_item(opt_id[choice]);
+      maintain_menu();
+    }
+
+    if (serial_linked && !battle_vsync) swapscreen_novsync();
+    else swapscreen();
+
+    do {
+      _kernel_swi(OS_ReadMonotonicTime,&r,&r);
+      end_draw = r.r[0];
+      frames = (end_draw-start_draw)>>1; /* >1 is slower */
+    } while (frames==0);
+
+#ifndef TIME_LOCK
+    frames = 1;
+#endif
+    if (serial_linked) frames=1; /* Turn update control off */
+
+    _kernel_swi(OS_ReadMonotonicTime,&r,&r);
+    start_draw = r.r[0];
+
+    if (igmenu) {
+      read_menu_joy();
+
+      if (menu_joy_data & DOWN) choice++;
+      if (menu_joy_data & UP) choice--;
+      if (choice==255) choice=2;
+      if (choice>2) choice=0;
+
+      if (igmenu == 1) {
+        if (menu_joy_data & FIRE1) {
+          switch (choice) {
+            case 0 :
+              remove_all_items();
+              set_data_for_menus();
+              options_menu(1);
+              set_data_for_game();
+
+  	      /*add_new_menu_item(&msg[132][8],0,70,CENTRE+RED);
+  	      for (opt=0; opt<3; opt++) {
+  	        opt_id[opt] = add_new_menu_item(msg[opts[opt]],
+  	        	      			0,100+20*opt,CENTRE+CYAN);
+  	      }*/
+
+  	      construct_game_screen(global_plrcount,0);
+  	      igmenu = 2;
+
+              break;
+
+            case 1 :
+              game_over = USER_QUIT;
+              if (shutdown_timer>4) shutdown_timer=4;
+              remove_all_items();
+              break;
+
+            case 2 :
+              igmenu = 2;
+              remove_all_items();
+              break;
+          }
+        }
+      }
+      else {
+        if (scan_keyboard() == 0xff) {
+          /* No keys are pressed */
+          igmenu = 0;
+          set_keys_for_game();
+        }
+      }
+    }
+    else {
+      if (delay_timer==DELAY_LOOP) {
+        delay_timer = 0;
+
+        for (; frames; frames--) {
+          level_empty = 1;
+
+          oldscore = score;
+          blkscore = 0;
+
+          _kernel_swi(OS_Mouse,&r,&r);
+          msx = r.r[0];
+          msy = r.r[1];
+
+          /* Read keyboard for those players as necessary */
+          read_keyboard(kbdev[0],kbdev[1],kbdev[2],kbdev[3]);
+
+          read_mouse();
+
+          read_ctrl_keys();
+
+          switch (paused) {
+            case 0 :
+              if (misc_ctrl_keys[1]) {
+                opt = add_new_menu_item(msg[104],0,100,CENTRE+CYAN);
+                highlighted_item(opt);
+                paused = 1;
+              }
+              break;
+
+            case 1 :
+              if (misc_ctrl_keys[1]==0) paused = 2;
+              break;
+
+            case 2 :
+              if (misc_ctrl_keys[1]) {
+                remove_all_items();
+                paused = 3;
+              }
+              break;
+
+  	    case 3 :
+  	      if (misc_ctrl_keys[1]==0) {
+  	        paused = 0;
+  	        set_keys_for_game();
+  	      }
+  	      break;
+  	  }
+
+  	  if (!paused) {
+    	    if (misc_ctrl_keys[0]) {
+  	      /* Init in-game menu */
+  	      add_new_menu_item(&msg[132][8],0,70,CENTRE+RED);
+  	      for (opt=0; opt<3; opt++) {
+  	        opt_id[opt] = add_new_menu_item(msg[opts[opt]],
+  	        	      			0,100+20*opt,CENTRE+CYAN);
+  	      }
+
+  	      choice = 2;
+  	      igmenu = 1;
+
+  	      set_keys_for_menus();
+  	    }
+    	  }
+
+    	  if (joy_available) {
+            if (joys&1) read_joystick(0,4);
+            if (joys&2) read_joystick(1,5);
+            if (joys&4) read_joystick(2,6);
+            if (joys&8) read_joystick(3,7);
+    	  }
+
+    	  /* Run AI */
+    	  prepare_ai();
+
+    	  for (plr=0; plr<4; plr++) {
+    	    if (plr_type[plr] == PLR_CPU) update_ai(plr);
+    	  }
+
+    	  if (serial_linked) {
+    	    serial_poll();
+#if 0
+    	    for (plr=0; plr<4; plr++) {
+    	      if (!serial_broken) {
+    	        if (plr_type[plr] == PLR_REMOTE) {
+  	          ctrl_word_table[players[plr].ctrl_word] =
+  	        				/*slink_read_byte();*/
+  	        				serial_get_byte_wait(150);
+  	          if (timed_out) serial_broken = TRUE;
+  	        }
+  	        else if (plr_type[plr] != PLR_SLEEPING) {
+  	          serial_send_byte_wait(ctrl_word_table[players[plr].ctrl_word],150);
+  	          /*slink_send_byte(ctrl_word_table[players[plr].ctrl_word]);*/
+
+  	          if (timed_out) serial_broken = TRUE;
+  	        }
+  	      }
+  	    }
+ #else
+            /* Send local player details */
+            for (plr=0; plr<4; plr++) {
+              if (!serial_broken) {
+                if (plr_type[plr] != PLR_REMOTE &&
+                    plr_type[plr] != PLR_SLEEPING) {
+
+                  serial_send_byte_wait(ctrl_word_table[players[plr].ctrl_word],150);
+                  if (timed_out) serial_broken = TRUE;
+                }
+              }
+            }
+
+            /* Receive remote player details */
+            for (plr=0; plr<4; plr++) {
+              if (!serial_broken) {
+                if (plr_type[plr] == PLR_REMOTE) {
+                  ctrl_word_table[players[plr].ctrl_word] =
+  	        				serial_get_byte_wait(150);
+  	          if (timed_out) serial_broken = TRUE;
+  	        }
+  	      }
+  	    }
+ #endif
+
+  	  }
+
+	  if (!paused) {
+            grid_scan();
+
+      	    /* Update bonus effect data */
+      	    for (plr=0; plr<4 && !(frame_time&3); plr++) {
+              if (mystery[plr][1]) {
+                mystery[plr][1]--;
+
+        	if (mystery[plr][1] == 0) {
+        	  /* Effect has ended */
+
+        	  if (mystery[plr][0] == 4) {
+        	    /* Fuel leak - cancel */
+        	    players[plr].extra_flags ^= (1<<4);
+        	  }
+
+        	  /* Switch off efect */
+        	  mystery[plr][0] = 0;
+        	}
+
+        	/* Cancel fuel leak if we have a different bonus effect */
+        	if (mystery[plr][0] != 4 &&
+        	    (players[plr].extra_flags&(1<<4))) {
+        	  players[plr].extra_flags ^= (1<<4);
+        	}
+              }
+            }
+
+            man_handle();
+
+            bomb_handle();
+
+            update_enemies();
+
+    	    if (blkscore) {
+    	      score += (blkscore*BLOCKAGE_SCORE);
+    	      if (blkscore>1) score += MULT_BLOCKAGE_SCORE*(blkscore-1);
+    	    }
+
+            if (game_type == SINGLE_PLAYER && score != oldscore) {
+              /* Update score message */
+              sprintf(scorestring,"%12d",score);
+              hud_mess[0].changed = 1;
+            }
+
+            update_hud_mess();
+
+            /* See if the level is complete */
+            if (level_empty && !exit_open && game_type==SINGLE_PLAYER)
+              open_exit();
+          }
+        }
+      }
+      else {
+        frames = 0;
+        delay_timer++;
+      }
+    }
+
+    /* Check for end of game */
+    if (game_over != USER_QUIT) {
+      if (game_type==BATTLE_MODE) {
+        if (!igmenu && serial_linked && serial_broken) {
+          game_over = BATTLE_LINK_LOST;
+        }
+        if (alive==1) game_over = BATTLE_WON;
+        if (alive==0) game_over = BATTLE_DRAWN;
+      }
+      else {
+        /* End of game scenario for single player game */
+        if (alive==0) game_over = PLAYER_DEAD;
+
+        /* Need end of level trigger */
+        if (floor_map[players[0].ypos>>4][players[0].xpos>>4].status==149){
+          game_over = LEVEL_COMPLETE;
+
+          /* We want to end the game pretty sharpish */
+          if (shutdown_timer>8) shutdown_timer=8;
+        }
+      }
+    }
+
+    /* If we have an end of game scenario, countdown the timer to our
+    ** return to the menus...
+    */
+    if (game_over) {
+      shutdown_timer--;
+
+      if (global_audio_stat & GAME_MUS_ENABLED) {
+        dsym_monitor_volume(0);
+      }
+    }
+  } while (shutdown_timer);
+
+  clear_keyboard();
+
+  /* Serial BBS stuff */
+  if (serial_linked) {
+    if (serial_master) {
+      /* Listen */
+      serial_get_byte_wait(100);   /* "end of game" */
+      serial_get_byte_wait(100);   /* winner */
+    }
+    else {
+      /* Send end of game details */
+      serial_send_byte_wait(64,100); /* "end of game" */
+      if (game_over == BATTLE_DRAWN) {
+        /* No winner */
+        serial_send_byte_wait('0',100);
+      }
+      else if (game_over == BATTLE_LINK_LOST) {
+        /* Link broken */
+        serial_send_byte_wait('L',100);
+      }
+      else if (game_over == USER_QUIT) {
+        /* User quit */
+        serial_send_byte_wait('Q',100);
+      }
+      else {
+        int p, w;
+
+        /* find winner */
+        for (p=w=0; p<4; p++) {
+      	  if (plr_type[p] &&
+      	      !((players[p].status>>4)==5 && players[p].anim_ctr==255)) {
+
+      	    w = p+1;
+      	  }
+        }
+
+        /* Send winner */
+        serial_send_byte_wait('0'+w,100);
+      }
+    }
+  }
+
+  check_map();
+
+#ifndef NO_PRINTF
+  for (plr=0; plr<128; plr++) {
+    if (bonus_array[plr].status & (1<<7)) {
+      printf("Bonus %d : @ %d,%d (0x%x,%d)\n",plr,
+      	     bonus_array[plr].x<<1,
+      	     bonus_array[plr].y<<1,
+      	     bonus_array[plr].status,
+      	     bonus_array[plr].anim_ctr);
+    }
+  }
+
+  for (plr=0; plr<64; plr++) {
+    if (flour_array[plr].status & (1<<7)) {
+      printf("flour %d : @ %d,%d (0x%x,%d)\n",plr,
+      	     flour_array[plr].x<<1,
+      	     flour_array[plr].y<<1,
+      	     flour_array[plr].status,
+      	     flour_array[plr].anim_ctr);
+    }
+  }
+#endif
+
+  if (global_audio_stat & GAME_MUS_ENABLED) {
+    /* Fade out game music */
+    do {
+      osbyte(19,0,0);
+    } while (dsym_monitor_volume(0));
+  }
+
+  dsym_stop_song();
+
+  set_keys_for_menus();
+
+  set_data_for_menus();
+
+  dsym_set_stereo_for_menus();
+
+  dsym_start_song_warm(MENU_TUNE);
+
+  return game_over;
+}
+
+void open_exit(void)
+{
+  /* Scan game grid and turn any exit beam tiles into open exit tiles */
+  int x,y;
+
+  for (y=1; y<1+arena_depth; y++) {
+    for (x=1; x<VIS_TILES_H+1; x++) {
+      if (floor_map[y][x].status==2) {
+        floor_map[y][x].normal_stat = 149;
+        floor_map[y][x].status = 149;
+        floor_map[y][x].sprite = 233;
+      }
+    }
+  }
+
+  exit_open = 1;
+
+  EXIT_OPEN_SFX;
+}
+
+void set_keys_for_menus(void)
+{
+  int p, k;
+
+  for (p=0;p<4;p++)
+    for (k=0;k<8;k++)
+      keyboard_def[p][k] = menu_keyboard_def[p][k];
+}
+
+void set_keys_for_game(void)
+{
+  int p, k;
+
+  for (p=0;p<4;p++)
+    for (k=0;k<8;k++)
+      keyboard_def[p][k] = game_keyboard_def[p][k];
+}
+
+void set_data_for_game(void)
+{
+  /* Re-uses menu pic storage area for flour explosion sprites while game
+  ** is running. Must re-load menu picture at end of game.
+  */
+
+  int f,x,y,datum,new_datum,byte;
+
+  /* init_enemies(); */
+
+  for (f=0; f<20; f++) {
+    for (y=0; y<48; y++) {
+      for (x=0; x<24; x+=2) {
+        datum = bexpl_gfx[f][y][x];
+        for (new_datum=byte=0; byte<4; byte++) {
+          switch ((datum>>(byte*8))&0xff) {
+            case 20 :
+              new_datum |= 208<<(byte*8);
+              break;
+            case 23 :
+              new_datum |= 209<<(byte*8);
+              break;
+            case 87 :
+              new_datum |= 253<<(byte*8);
+              break;
+            case 119 :
+              new_datum |= 254<<(byte*8);
+              break;
+            case 0 :
+              break;
+            default :
+              new_datum |= 211<<(byte*8);
+          }
+        }
+
+        flour_gfx[f][y][x] = new_datum;
+        flour_gfx[f][y][x+1] = bexpl_gfx[f][y][x+1];
+      }
+    }
+  }
+}
+
+void set_data_for_menus(void)
+{
+  int datum, x, y;
+  PFILE* source;
+
+  if ((source=pak_fopen("<Mars$Dir>.d.rawscr","rb"))==NULL) {
+#ifndef NO_PRINTF
+    printf("Error loading menu screen - program halted\n");
+#endif
+    exit(0);
+  }
+
+  for (y=0; y<256; y++) {
+    for (x=0; x<320; x++) {
+      datum = pak_fgetc(source);
+      *(((ubyte*)flour_gfx) + 320*y+x) = datum;
+    }
+  }
+
+  pak_fclose(source);
+
+#ifndef NO_PRINTF
+  printf("Loaded menu screen successfully\n");
+#endif
+}
+
+int build_mask(int val)
+{
+  int mask, resmask, byte;
+
+  mask = 0xff;
+  resmask = 0xffffffff;
+  for (byte=0; byte<4; byte++) {
+    if (val&mask) resmask ^= mask;
+    mask<<=8;
+  }
+
+  return resmask;
+}
+
+void load_bgnd_gfx(ubyte set)
+{
+  /* Load background graphics set */
+  PFILE *source;
+  char sfn[] = "<Mars$Dir>.d.l1.raw_bgnd";
+  int  datum, pos;
+  int  x,y;
+  char *exp_tiles;
+
+  if (set != gfx_set_loaded) {
+#ifndef NO_PRINTF
+    printf("Loading background graphics set %d...\n",set+1);
+#endif
+
+    sfn[14] = '1'+set;
+
+    if ((source=pak_fopen(sfn,"rb"))==NULL) {
+#ifndef NO_PRINTF
+      printf("Error loading floor tile sprites - program halted\n");
+#endif
+      exit(0);
+    }
+
+    pos = x = 0;
+    do {
+      datum = pak_getw(source);
+
+      if (!pak_feof(source)) {
+        floor_tiles[pos+x] = datum;
+        pos++;
+        /* printf("%x\n",datum); */
+      }
+
+      if (pos==(64*4*16)) {
+        /* The start of the 64th tile :
+        ** tile 64 is the start of 140 explosion tiles!
+        */
+        x = 140*4*16;
+      }
+    } while (!pak_feof(source));
+
+    pak_fclose(source);
+
+#ifndef NO_PRINTF
+    printf("Loaded %d tiles successfully\n",pos>>6);
+    printf(" - finished on tile %d/256\n",(pos+x)>>6);
+#endif
+
+    exp_tiles = (char *) &floor_tiles[64*16*4]; /* tile #64 */
+
+    /* Now load explosion graphics */
+#ifndef NO_PRINTF
+    printf("Loading explosion graphics...\n");
+#endif
+
+    if ((source=pak_fopen("<Mars$Dir>.d.rawexpl","rb"))==NULL) {
+#ifndef NO_PRINTF
+      printf("Error loading explosion sprites - program halted\n");
+#endif
+      exit(0);
+    }
+
+    for (pos=0; pos<140; pos++) {
+      for (y=0; y<16; y++) {
+        for (x=0; x<16; x++) {
+          datum = pak_fgetc(source);
+          expl_gfx[pos][y][x] = (datum==91) ? 0:datum;
+          *exp_tiles = (datum!=91) ? datum:*(((char *)floor_tiles)+(y<<4)+x);
+          exp_tiles++;
+        }
+      }
+    }
+
+    pak_fclose(source);
+
+#ifndef NO_PRINTF
+    printf("Loaded explosion successfully\n");
+#endif
+
+    gfx_set_loaded = set;
+  }
+}
+
+void init_gfx(void)
+{
+  PFILE *source;
+  int  datum, pos;
+  int  offset;
+  int  x,y;
+  int  w,h;
+
+  if ((source=pak_fopen("<Mars$Dir>.d.rawbexpl","rb"))==NULL) {
+#ifndef NO_PRINTF
+    printf("Error loading big explosion sprites - program halted\n");
+#endif
+    exit(0);
+  }
+
+  for (pos=0; pos<20; pos++) {
+    for (y=0; y<48; y++) {
+      for (x=0; x<24; x+=2) {
+        datum = pak_getw(source);
+        bexpl_gfx[pos][y][x] = datum;
+        bexpl_gfx[pos][y][x+1] = build_mask(datum);
+      }
+    }
+  }
+
+  pak_fclose(source);
+
+#ifndef NO_PRINTF
+  printf("Loaded big explosion successfully\n");
+#endif
+
+  if ((source=pak_fopen("<Mars$Dir>.d.micons","rb"))==NULL) {
+#ifndef NO_PRINTF
+    printf("Error loading menu icons - program halted\n");
+#endif
+    exit(0);
+  }
+
+  for (pos=offset=0; pos<26; pos++) {
+    /* First, load sprite dimensions */
+    w = pak_fgetc(source);
+    h = pak_fgetc(source);
+
+#ifndef NO_PRINTF
+    printf("icon %d : %dx%d\n",pos,w<<2,h);
+#endif
+
+    menu_icon[pos].width = w<<2;
+    menu_icon[pos].height = h;
+    menu_icon[pos].gfx = (pixel *) &menu_icon_data[offset][0];
+
+    for (y=0; y<h; y++) {
+      for (x=0; x<w; x++) {
+        datum = pak_getw(source);
+        menu_icon_data[offset][0] = datum;
+        menu_icon_data[offset][1] = build_mask(datum);
+        offset++;
+      }
+    }
+  }
+
+  pak_fclose(source);
+
+#ifndef NO_PRINTF
+  printf("Loaded menu icons successfully\n");
+#endif
+
+  if ((source=pak_fopen("<Mars$Dir>.d.rawbflip","rb"))==NULL) {
+#ifndef NO_PRINTF
+    printf("Error loading bonus anim - program halted\n");
+#endif
+    exit(0);
+  }
+
+  for (pos=0; pos<15; pos++) {
+    for (y=0; y<16; y++) {
+      for (x=0; x<16; x++) {
+        datum = pak_fgetc(source);
+        bonus_flip_gfx[pos][y][x] = datum;
+      }
+    }
+  }
+
+  pak_fclose(source);
+
+#ifndef NO_PRINTF
+  printf("Loaded bonus anim successfully\n");
+#endif
+
+  if ((source=pak_fopen("<Mars$Dir>.d.rawbord","rb"))==NULL) {
+#ifndef NO_PRINTF
+    printf("Error loading border - program halted\n");
+#endif
+    exit(0);
+  }
+
+  for (y=0; y<32; y++) {
+    for (x=0; x<80; x++) {
+      datum = pak_fgetc(source);
+      title_box[0][y][x] = datum;
+    }
+  }
+
+  for (pos=0; pos<6; pos++) {
+    for (y=0; y<8; y++) {
+      for (x=0; x<8; x++) {
+        datum = pak_fgetc(source);
+        border[pos][y][x] = datum;
+      }
+    }
+  }
+
+  for (y=0; y<32; y++) {
+    for (x=0; x<80; x++) {
+      datum = pak_fgetc(source);
+      title_box[1][y][x] = datum;
+    }
+  }
+
+  for (y=0; y<7; y++) {
+    for (x=0; x<148; x++) {
+      datum = pak_fgetc(source);
+      small_font[y][x] = datum;
+    }
+  }
+
+  for (pos=0; pos<6; pos++) {
+    for (y=0; y<7; y++) {
+      for (x=0; x<7; x++) {
+        datum = pak_fgetc(source);
+        small_bonus[pos][y][x] = datum;
+      }
+    }
+  }
+
+  pak_fclose(source);
+
+#ifndef NO_PRINTF
+  printf("Loaded border successfully\n");
+#endif
+
+  if ((source=pak_fopen("<Mars$Dir>.d.rawnmes","rb"))==NULL) {
+#ifndef NO_PRINTF
+    printf("Error loading enemies - program halted\n");
+#endif
+    exit(0);
+  }
+
+  for (pos=0;pos<((8+4+4+5+4)*4)+20;pos++) {
+    for (y=0;y<16;y++) {
+      for (x=0;x<16;x++) {
+        datum = pak_fgetc(source);
+        enemy_gfx[pos>>2][pos&3][y][x] = (datum==91) ? 0:datum;
+      }
+    }
+  }
+
+  pak_fclose(source);
+
+#ifndef NO_PRINTF
+  printf("Loaded enemy sprite data successfully\n");
+#endif
+
+  /* Generate green bomb eater from red bomb eater */
+  for (pos=0;pos<16;pos++) {
+    for (y=0;y<16;y++) {
+      for (x=0;x<16;x++) {
+        datum = enemy_gfx[8+(pos>>2)][pos&3][y][x];
+        switch (datum) {
+          case 19 :
+          case 20 : enemy_gfx[26+(pos>>2)][pos&3][y][x] = 64; break;
+          case 21 : enemy_gfx[26+(pos>>2)][pos&3][y][x] = 65; break;
+          case 22 : enemy_gfx[26+(pos>>2)][pos&3][y][x] = 66; break;
+          case 23 : enemy_gfx[26+(pos>>2)][pos&3][y][x] = 67; break;
+          default : enemy_gfx[26+(pos>>2)][pos&3][y][x] = datum;
+        }
+      }
+    }
+  }
+
+  if ((source=pak_fopen("<Mars$Dir>.d.misctiles","rb"))==NULL) {
+#ifndef NO_PRINTF
+    printf("Error loading misc tiles - program halted\n");
+#endif
+    exit(0);
+  }
+
+  for (pos=0; pos<9; pos++) {
+    for (y=0; y<16; y++) {
+      for (x=0; x<16; x++) {
+        datum = pak_fgetc(source);
+        misc_tiles[pos][y][x] = datum;
+      }
+    }
+  }
+
+  pak_fclose(source);
+
+  if ((source=pak_fopen("<Mars$Dir>.d.rawexpl","rb"))==NULL) {
+#ifndef NO_PRINTF
+    printf("Error loading explosion sprites - program halted\n");
+#endif
+    exit(0);
+  }
+
+  for (pos=0; pos<140; pos++) {
+    for (y=0; y<16; y++) {
+      for (x=0; x<16; x++) {
+        datum = pak_fgetc(source);
+        expl_gfx[pos][y][x] = (datum==91) ? 0:datum;
+      }
+    }
+  }
+
+  pak_fclose(source);
+
+#ifndef NO_PRINTF
+  printf("Loaded explosion successfully\n");
+#endif
+
+  set_data_for_menus();
+}
+
+void test_gfx(void)
+{
+  int x,y,p;
+  char *gfx;
+  char *scr;
+
+  /* printf("? %x = %x\n",&floor_tiles[0],floor_tiles[0]); */
+  gfx = (char *) &floor_tiles[0];
+  scr = (char *) scrmem;
+
+  /* printf("! %x = %x\n",gfx,*gfx); */
+  p = 0;
+  for (y=0; y<16; y++) {
+    for (x=0; x<16; x++) {
+      *((char *) (scr + (y*320) + x)) = *(gfx+p);
+      p++;
+      /* was *((char *) (gfx + (16*y) + x)); */
+    }
+  }
+}
+
+void init_map(void)
+{
+  /* Set up a demo map that can be used for testing */
+  int x,y;
+
+  /* Set sentinel border */
+  for (y=0;y<32;y++) {
+    for (x=0;x<25;x++) {
+      floor_map[y][x].status = floor_map[y][x].normal_stat = demo_map[y][x];
+      floor_map[y][x].extra1 = 0;
+      floor_map[y][x].extra2 = 0;
+
+      floor_map[y][x].blast     = 0;
+      floor_map[y][x].blast_len = 0;
+      floor_map[y][x].overlay   = 0;
+      floor_map[y][x].men_here  = 0;
+
+      switch (demo_map[y][x]) {
+        case 0x80 : floor_map[y][x].sprite = 0;
+                    if ((rnd()&3)>1 &&
+                      ((x>3 && x<17) || (y>3 && y<12))
+                      && 1) {
+                      floor_map[y][x].sprite = 29+(rnd()&3);
+                      floor_map[y][x].status = 0;
+                      floor_map[y][x].normal_stat =
+                      	  	    		128|(1+(rnd()&7));
+                    }
+                    break;
+        case 0x01 : floor_map[y][x].sprite = 1; break;
+        case 0x11 : floor_map[y][x].sprite = 3; break;
+        case   19 : floor_map[y][x].sprite = 2; break;
+        case   18 : floor_map[y][x].sprite = 4; break;
+        case   20 : floor_map[y][x].sprite = 10; break;
+        case   21 : floor_map[y][x].sprite = 12; break;
+        case   22 : floor_map[y][x].sprite = 9; break;
+        case   23 : floor_map[y][x].sprite = 11; break;
+        case   24 : floor_map[y][x].sprite = 5; break;
+        case   25 : floor_map[y][x].sprite = 6; break;
+        case   26 : floor_map[y][x].sprite = 7; break;
+        case   27 : floor_map[y][x].sprite = 8; break;
+        case   28 : floor_map[y][x].status = 2;
+               	    floor_map[y][x].sprite = 222;
+               	    break;
+        case 0x90 : floor_map[y][x].sprite = 13; break;
+        case 0x91 : floor_map[y][x].sprite = 17; break;
+        case 0x92 : floor_map[y][x].sprite = 21; break;
+        case 0x93 : floor_map[y][x].sprite = 25; break;
+      }
+    }
+  }
+
+  /* Game arena is 30 tiles deep - as specified here. This affects the
+  ** following :
+  **   - view scroll limits
+  **   - wraparound on flying bombs and bonuses
+  **   - the area handled by grid scan
+  **   - the area in which random movement enemies can travel
+  **
+  ** To work properly, this assumes the sentinel wall is outside the
+  ** given limit. If it is not there, the flying bomb/bonus code in
+  ** particular has a bit of a problem. Also, the arena size must be
+  ** at least as large as vis_tiles_v, otherwise we start viewing
+  ** behind the map data.
+  */
+  arena_depth = 30;  /* 30 tiles vertically (full size) */
+
+  /*
+  for (x=0;x<6;x++) {
+    floor_map[pipe_conex[x][1]][pipe_conex[x][0]].extra1
+                                             = pipe_conex[(x+1)%6][0];
+    floor_map[pipe_conex[x][1]][pipe_conex[x][0]].extra2
+                                             = pipe_conex[(x+1)%6][1];
+  }
+  */
+}
+
+void check_map()
+{
+#ifndef NO_PRINTF
+  /* Make sure tile flags are consistent at end of game */
+  int x,y,p;
+
+  for (y=0;y<32;y++) {
+    for (p=0; p<2; p++) {
+      for (x=0;x<25;x++) {
+        printf("%02x ",(p) ? floor_map[y][x].status:
+               	     	     floor_map[y][x].sprite);
+      }
+      printf("\n");
+    }
+    printf("\n");
+  }
+#endif
+}
+
+int getw(FILE *fptr)
+{
+  int retval;
+
+  retval = getc(fptr);
+  retval |= getc(fptr)<<8;
+  retval |= getc(fptr)<<16;
+  retval |= getc(fptr)<<24;
+
+  return retval;
+}
+
+void putw(int v,FILE *fptr)
+{
+  fputc(v&0xff,fptr);
+  fputc((v>>8)&0xff,fptr);
+  fputc((v>>16)&0xff,fptr);
+  fputc((v>>24)&0xff,fptr);
+}
+
+void init_blokes(void)
+{
+  /* Set up player control block for test bloke(s) */
+  int p;
+  char* names[] = {
+    "PAUL",
+    "FRED",
+    "JIM",
+    "SHIELA"
+  };
+
+  for (p=0; p<4; p++) {
+    players[p].colour = p;
+    players[p].ctrl_word = p;
+    players[p].sprite_num = 0;
+    players[p].anim_ctr = 0;
+    players[p].status = 0;
+    players[p].bombs = 1;
+    players[p].bombs_layed = 0;
+    players[p].flames = 2;
+    players[p].lives = 2;
+    players[p].extra_flags = 0; /* was((p<2) ? 9:0)|2; */
+    mystery[p][0] = 0;
+    mystery[p][1] = 0;
+
+    strcpy(players[p].name,names[p]);
+
+    plr_type[p] = PLR_SLEEPING;
+  }
+}
+
+void prepare_players(int starting_lives)
+{
+  int p;
+
+  for (p=0; p<4; p++) {
+    if (plr_type[p]) {
+      players[p].colour = p;
+      players[p].sprite_num = 0;
+      players[p].anim_ctr = 0;
+      players[p].status = 0;
+      players[p].bombs = (cheat_mode) ? 15:1;
+      players[p].bombs_layed = 0;
+      players[p].flames = (cheat_mode) ? 15:2;
+      players[p].lives = starting_lives;
+      players[p].extra_flags = 0;
+      mystery[p][0] = 0;
+      mystery[p][1] = 0;
+    }
+    else {
+      /* This player doesn't exist */
+      players[p].anim_ctr = 255;
+      players[p].status = 5<<4;
+      players[p].lives = 0;
+    }
+  }
+}
+
+void player_ready_for_next_level(void)
+{
+  /* Single player game : prepare player for next level */
+
+  players[0].status = 0;
+  players[0].bombs = 1;
+  players[0].bombs_layed = 0;
+  players[0].flames = 2;
+  players[0].extra_flags = 0;
+  players[0].sprite_num = 0;
+  players[0].anim_ctr = 0;
+  mystery[0][0] = 0;
+  mystery[0][1] = 0;
+}
+
+void init_bombs(void)
+{
+  int bomb;
+
+  for (bomb=0; bomb<64; bomb++) {
+    bombs[bomb].status = 0;
+    bombs[bomb].owner = bombs[bomb].pushed_by = 255;
+
+    flour_array[bomb].status = 0;
+  }
+}
+
+int joy_detect()
+{
+  _kernel_swi_regs r;
+  char buffer[256];
+  char expect[] = "User";
+  int retval;
+
+  r.r[0] = 0x43f40;
+  r.r[1] = (int) buffer;
+  r.r[2] = 255;
+
+  _kernel_swi(OS_SWINumberToString,&r,&r);
+
+#ifndef NO_PRINTF
+  printf("SWI &43f40 : %s\n",buffer);
+  printf("Expected   : %s\n",expect);
+#endif
+
+  retval = (strcmp(buffer,expect)!=0);
+
+#ifndef NO_PRINTF
+  printf("Result     : %s\n",(retval) ? "Joystick driver detected":"Joystick driver not present");
+#endif
+
+  return retval;
+}
+
+void screen_mode_info(void)
+{
+  _kernel_swi_regs r;
+  int val, m, x, y, c;
+
+  r.r[0] = -1;
+
+  for (val=0;val<=12;val++) {
+    r.r[1] = val;
+    _kernel_swi(0x35,&r,&r);
+    logfile("Mode variable %2d = 0x%08x = %d\n",val,r.r[2],r.r[2]);
+  }
+
+  for (m=0; m<128; m++) {
+    r.r[0] = m;
+
+    r.r[1] = 9;
+    _kernel_swi(0x35,&r,&r);
+    c = 1<<r.r[2];
+
+    r.r[1] = 11;
+    _kernel_swi(0x35,&r,&r);
+    x = r.r[2]+1;
+
+    r.r[1] = 12;
+    _kernel_swi(0x35,&r,&r);
+    y = r.r[2]+1;
+
+    logfile("Mode %3d : %d,%d in %d colours\n",m,x,y,c);
+  }
+}
+
+void check_mode(void)
+{
+  _kernel_swi_regs r;
+  int x, y, c;
+
+  r.r[0] = 49;
+
+  r.r[1] = 9;
+  _kernel_swi(0x35,&r,&r);
+  c = 1<<r.r[2];
+
+  r.r[1] = 11;
+  _kernel_swi(0x35,&r,&r);
+  x = r.r[2]+1;
+
+  r.r[1] = 12;
+  _kernel_swi(0x35,&r,&r);
+  y = r.r[2]+1;
+
+  mode49_avail = (x==320 && y==480 && c==8);
+}
+
+void change_mode_num(int targ_mode)
+{
+  if (targ_mode != currscrmode) {
+    /* Is target mode available? */
+    if (targ_mode == MODE_49 && !mode49_avail) targ_mode = MODE_13;
+
+    screenres = targ_mode;
+  }
+}
+
+void change_mode(int targ_mode)
+{
+  if (targ_mode != currscrmode) {
+    /* Is target mode available? */
+    if (targ_mode == MODE_49 && !mode49_avail) targ_mode = MODE_13;
+
+    screenres = currscrmode = targ_mode;
+
+    setmode(128+((targ_mode==MODE_13) ? 13:49));
+    osbyte(114,2,0);
+    osbyte(113,1,0);  /* Displaystart is different to screenstart */
+    osbyte(19,0,0);
+
+    readscr((int) &screenbank);
+
+    /* screen_mode_info(); */
+    logfile("bank 1 : %x, bank 2 : %x\n",screenbank[0],screenbank[1]);
+
+    screenbank[2] = screenbank[0];
+
+    scrmem = screenbank[1];
+    scrmem_arena = scrmem+320*((targ_mode==MODE_49) ? 48:40)+8;
+    ticker = 1;
+    osbyte(113,2,0);
+
+    /* Font data */
+    comp_char_data[0] = (targ_mode==MODE_49) ? 1:0;
+    comp_char_data[1] = (targ_mode==MODE_49) ? 2:1;
+  }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,48 @@
+typedef struct {
+  int number;
+  char file[16];
+  char info[32];
+  char creator[32];
+  int  vmajor;
+  int  vminor;
+  int flags;
+} SDEV_BLOCK;
+
+extern int (*sdev_driver)(int,...);
+extern int  *sdev_speed;
+extern int   sdev_numofspeeds;
+extern int   sdev_flags, sdev_version;
+extern char *sdev_info;
+extern char *sdev_creator;
+extern int   sdev_driver_count;
+extern int   sdev_highest_port;
+extern int   sdev_curr_driver;
+extern int   sdev_curr_speed_index;
+extern int   sdev_curr_port;
+
+extern SDEV_BLOCK drivers[16];
+
+#define DRIVER_PUTBYTE        0
+#define DRIVER_GETBYTE        1
+#define DRIVER_PUTBLOCK       2
+#define DRIVER_GETBLOCK       3
+#define DRIVER_CHECKTX        4
+#define DRIVER_CHECKRX        5
+#define DRIVER_FLUSHTX        6
+#define DRIVER_FLUSHRX        7
+#define DRIVER_CONTROLLINES   8
+#define DRIVER_MODEMCONTROL   9
+#define DRIVER_RXERRORS      10
+#define DRIVER_BREAK         11
+#define DRIVER_EXAMINE       12
+#define DRIVER_TXSPEED       13
+#define DRIVER_RXSPEED       14
+#define DRIVER_WORDFORMAT    15
+#define DRIVER_FLOWCONTROL   16
+#define DRIVER_INITIALISE    17
+#define DRIVER_CLOSEDOWN     18
+#define DRIVER_POLL          19
+#define DRIVER_SELECT        20
+
+void init_serial_drivers(void);
+void *driver_load(char *drivername);

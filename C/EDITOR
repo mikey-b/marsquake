@@ -1,0 +1,992 @@
+/* Moonquake II : Marsquake
+**
+** Level editor
+*/
+
+#include "mqhead.h"
+
+/** Internal function prototypes *****/
+void save_level(void);
+void enter_level_name(void);
+void load_level(void);
+void output_pipe_connections(FILE *f);
+
+char  ed_fname[14] = "level1";
+
+void set_keys_for_editor(void)
+{
+#ifdef ALLOW_EDITOR
+  int p, k;
+
+  for (p=0;p<4;p++)
+    for (k=0;k<8;k++)
+      keyboard_def[p][k] = edit_keyboard_def[p][k];
+#endif
+}
+
+void create_new_map(void)
+{
+#ifdef ALLOW_EDITOR
+  /* Initialises all editor map structures for new map */
+  int x, y;
+
+  /* Fill map with floor tiles, surrounded by blocking tiles */
+  for (y=0; y<32; y++) {
+    for (x=0; x<32; x++) {
+      editor_map[y][x] = (x==0 || y==0 || y==31 || x>VIS_TILES_H) ? 0:12;
+    }
+  }
+
+  /* Test tile so we can see the level move */
+  editor_map[4][4] = 0;
+#endif
+}
+
+void convert_edit_to_floor_map(void)
+{
+  /* convert data stored in editor map to a floor map that the game can
+  ** display
+  */
+  int x, y;
+
+  for (y=0; y<32; y++) {
+    for (x=0; x<32; x++) {
+      floor_map[y][x].status = tile_lib[editor_map[y][x]].status;
+      floor_map[y][x].normal_stat = floor_map[y][x].status;
+      floor_map[y][x].sprite = tile_lib[editor_map[y][x]].sprite;
+      floor_map[y][x].extra1 = 0;
+      floor_map[y][x].extra2 = 0;
+
+      floor_map[y][x].blast     = 0;
+      floor_map[y][x].blast_len = 0;
+      floor_map[y][x].overlay   = 0;
+      floor_map[y][x].men_here  = 0;
+    }
+  }
+}
+
+void place_tile(int x, int y, int type)
+{
+  /* Place a tile from the library at a given x,y position on both the
+  ** editor and the game map
+  **
+  ** If there is an enemy present on this tile, we must deallocate it.
+  */
+  int nme;
+
+  editor_map[y][x] = type;
+
+  floor_map[y][x].status = tile_lib[type].status;
+  floor_map[y][x].sprite = tile_lib[type].sprite;
+
+  floor_map[y][x].extra1 = floor_map[y][x].extra2 = 0;
+
+  floor_map[y][x].normal_stat = 0;
+
+  /* Find enemy unit on this tile */
+  for (nme=0; nme<ENEMY_COUNT; nme++) {
+    if (nme_unit[nme].status & EXISTS) {
+      if ((nme_unit[nme].y>>4)==y) {
+        /* Y has matched */
+        if ((nme_unit[nme].x>>4)==x) {
+          /* X has matched - there is an enemy on this tile.
+          ** Let's deallocate it
+          */
+          nme_unit[nme].status = 0;
+          ed_active_nme_count--;
+        }
+      }
+    }
+  }
+}
+
+void init_editor(void)
+{
+#ifdef ALLOW_EDITOR
+  /* Starting up the editor...
+  **
+  ** Initialise things, prepare the screen, prepare the keys...
+  */
+  int plr;
+
+  set_keys_for_editor();
+
+  create_new_map();
+
+  construct_game_screen(0,1);
+
+  convert_edit_to_floor_map();
+
+  dsym_stop_song();
+
+  init_enemies();
+
+  /* Init player positions */
+  for (plr=0; plr<4; plr++) {
+    players[plr].xpos = players[plr].ypos = (plr+1)<<4;
+  }
+
+  strcpy(ed_level_name,"UNNAMED");
+
+  editor_mode = ED_MODE_MAIN_MENU;
+  ed_active_nme_count = 0;
+  ed_tile = 0;
+  ed_gfx_set = 0;
+
+  load_bgnd_gfx(ed_gfx_set);
+#endif
+}
+
+void update_ed_hud(int cx, int cy)
+{
+#ifdef ALLOW_EDITOR
+  /* Display editor options */
+  int   *mems;
+  int   *memd;
+  int	count;
+  int	bank;
+  int	x,y;
+  char	coords[32];
+
+  for (bank=0; bank<2; bank++) {
+    mems = (int *) scrmem;
+
+    /* Blank options bar */
+    for (count=0; count<320*32/4; count++) *(mems+count) = 0x35353535;
+
+    switch (editor_mode) {
+      case ED_MODE_TILES :
+        /* Display currently chosen tile */
+        mems += (320*12+8)/4;
+        memd = (int *) &floor_tiles[tile_lib[ed_tile].sprite*4*16];
+        for (y=0; y<16; y++) {
+          for (x=0; x<4; x++) {
+            *(mems+(y*80)+x) = *(memd++);
+          }
+        }
+
+        /* Display currently higlighted position tile */
+        mems = (int *) scrmem+(320*12+160)/4;
+        memd = (int *) &floor_tiles[
+             	        tile_lib[editor_map[cy][cx]].sprite*4*16];
+        for (y=0; y<16; y++) {
+          for (x=0; x<4; x++) {
+            *(mems+(y*80)+x) = *(memd++);
+          }
+        }
+
+        break;
+
+      case ED_MODE_ENEMIES :
+        mems += (320*12+8)/4;
+        memd = (int *) *enemy_anims[enemy_lib[ed_tile]];
+        for (y=0; y<16; y++) {
+          for (x=0; x<4; x++) {
+            *(mems+(y*80)+x) = *(memd++);
+          }
+        }
+
+	if (floor_map[cy][cx].extra2) {
+          mems = (int *) scrmem+(320*12+160)/4;
+          memd = (int *) *enemy_anims[
+               	      	       nme_unit[floor_map[cy][cx].extra2 & 63].type];
+          for (y=0; y<16; y++) {
+            for (x=0; x<4; x++) {
+              *(mems+(y*80)+x) = *(memd++);
+            }
+          }
+        }
+
+        break;
+    }
+  }
+
+  /* Editor mode title string */
+  draw_small_string(enum_editor_modes[editor_mode],8,4);
+  draw_small_string(ed_level_name,160,4);
+
+  switch (editor_mode) {
+    case ED_MODE_TILES :
+      draw_small_string(tile_names[tile_lib[ed_tile].tile_desc],26,12);
+      draw_small_string(tile_names[tile_lib[editor_map[cy][cx]].tile_desc]
+      		    ,178,12);
+      sprintf(coords,"X %d Y %d",cx,cy);
+      draw_small_string(coords,26,20);
+
+      break;
+
+    case ED_MODE_ENEMIES :
+      draw_small_string(enemy_names[enemy_lib[ed_tile]],26,12);
+      sprintf(coords,"%d TOTAL",ed_active_nme_count);
+      draw_small_string(coords,178,20);
+
+      if (floor_map[cy][cx].extra2) {
+        draw_small_string(enemy_names[
+                                 nme_unit[floor_map[cy][cx].extra2&63].type],
+                                 178,12);
+      }
+      break;
+
+    case ED_MODE_BLOKES :
+      sprintf(coords,"PLAYER %d",ed_tile+1);
+      draw_small_string(coords,26,12);
+      sprintf(coords,"X %d Y %d",cx,cy);
+      draw_small_string(coords,26,20);
+      break;
+  }
+#endif
+}
+
+ubyte read_keyboard_for_edit(void)
+{
+#ifdef ALLOW_EDITOR
+  ubyte new_key, key, plr;
+  static ubyte edit_keys[] = {
+    LEFT,
+    RIGHT,
+    UP,
+    DOWN,
+    FIRE1,
+    FIRE2
+  };
+
+  /* Get keyboard input */
+  read_keyboard(0,1,-1,-1);
+
+  /* Combine two players input to form editor controls */
+  new_key = 0;
+  for (plr=0; plr<2; plr++) {
+    for (key=0; key<6; key++) {
+      if (ctrl_word_table[plr] & edit_keys[key]) {
+        new_key = ((plr) ? 7:1)+key;
+      }
+    }
+  }
+
+  if (new_key == ed_last_key) {
+    if (ed_last_key_timer) ed_last_key_timer--;
+
+    if (ed_last_key_timer!=0) {
+      new_key = 0;
+    }
+    else {
+      ed_last_key_timer = ED_KEY_REPEAT_SPEED;
+    }
+  }
+  else {
+    ed_last_key       = new_key;
+    ed_last_key_timer = ED_KEY_REPEAT_DELAY;
+  }
+
+  return new_key;
+#endif
+}
+
+void editor_tile_cursor(int cx, int cy)
+{
+#ifdef ALLOW_EDITOR
+  ubyte *tile_pos;
+  static ubyte cursor[16][16] = {
+    1,1,1,1,1,1,0,0,0,0,1,1,1,1,1,1,
+    1,1,1,1,1,1,0,0,0,0,1,1,1,1,1,1,
+    1,1,0,0,0,0,0,0,0,0,0,0,0,0,1,1,
+    1,1,0,0,0,0,0,0,0,0,0,0,0,0,1,1,
+    1,1,0,0,0,0,0,0,0,0,0,0,0,0,1,1,
+    1,1,0,0,0,0,0,0,0,0,0,0,0,0,1,1,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    1,1,0,0,0,0,0,0,0,0,0,0,0,0,1,1,
+    1,1,0,0,0,0,0,0,0,0,0,0,0,0,1,1,
+    1,1,0,0,0,0,0,0,0,0,0,0,0,0,1,1,
+    1,1,0,0,0,0,0,0,0,0,0,0,0,0,1,1,
+    1,1,1,1,1,1,0,0,0,0,1,1,1,1,1,1,
+    1,1,1,1,1,1,0,0,0,0,1,1,1,1,1,1
+  };
+  ubyte x,y;
+
+  tile_pos = ((ubyte*) scrmem_arena) + (16*(cx-1)) +
+  	     (16*((cy-1)-(global_y>>8)))*320;
+
+  for (y=0; y<16; y++) {
+    for (x=0; x<16; x++) {
+      if (cursor[y][x]) *(tile_pos + x + y*320) = cursor[y][x];
+    }
+  }
+#endif
+}
+
+void editor(void)
+{
+#ifdef ALLOW_EDITOR
+  /* Edit a new map */
+  int ex,ey;
+  ubyte opts[9] = { 51, 52, 54, 55, 59, 53, 74, 14, 255 };
+  ubyte opt_id[8];
+  ubyte ed_key;
+  ubyte ed_choice;
+  ubyte ed_opt_count;
+  ubyte ed_action_reqd;
+  ubyte	plr;
+
+  /* Set up main editor menu */
+  ready_for_new_menu();
+
+  init_editor();
+
+  arena_depth = 30;
+
+  ex = ey = 1;
+
+  msg[74][15] = '1'+ed_gfx_set;
+
+  do {
+    ed_choice = 0;
+    while (opts[ed_choice]!=255) {
+      opt_id[ed_choice] = add_new_menu_item(msg[opts[ed_choice]],
+      		      			  0,60+18*ed_choice,CENTRE+CYAN);
+      ed_choice++;
+    }
+    ed_opt_count = ed_choice;
+
+    ed_choice = ed_action_reqd = 0;
+
+    do {
+      /* Update screen */
+      if (editor_mode==ED_MODE_BLOKES) {
+        global_y = ((players[ed_tile].ypos>>4)-(VIS_TILES_V>>1))<<8;
+      }
+      else {
+        global_y = (ey-(VIS_TILES_V>>1))<<8;
+      }
+
+      if (global_y<0) global_y=0;
+      else {
+        if (((global_y>>8)+VIS_TILES_V)>=arena_depth) {
+          global_y = (arena_depth-VIS_TILES_V)<<8;
+        }
+      }
+
+      draw_floor(global_y,20,(int)&floor_tiles[0]);
+
+      draw_all_enemies(global_y);
+
+      for (plr=0; plr<4; plr++) {
+        if ((players[plr].ypos<<4)>global_y /*&&
+            (players[plr].ypos>>4)+VIS_TILES_V < (global_y>>8)*/) {
+          drawaman(global_y,&players[plr]);
+        }
+      }
+
+      update_ed_hud(ex,ey);
+
+      /* Display tile cursor */
+      if (editor_mode == ED_MODE_BLOKES) {
+        editor_tile_cursor(players[ed_tile].xpos>>4,players[ed_tile].ypos>>4);
+      }
+      else {
+        editor_tile_cursor(ex,ey);
+      }
+
+      /* Process keyboard controls */
+      ed_key = read_keyboard_for_edit();
+
+      /* Act according to key presses */
+      switch (editor_mode) {
+        case ED_MODE_TILES :
+        	/* Edit base map data */
+          switch (ed_key) {
+            case ED_LEFT2 :
+              if (ed_tile>0) ed_tile--;
+              break;
+
+            case ED_RIGHT2 :
+              if (tile_lib[ed_tile+1].properties!=255) ed_tile++;
+              break;
+
+            case ED_LEFT1 :
+              if (ex>1) ex--;
+              break;
+
+            case ED_RIGHT1 :
+              if (ex<VIS_TILES_H) ex++;
+              break;
+
+            case ED_UP1 :
+              if (ey>1) ey--;
+              break;
+
+            case ED_DOWN1 :
+              ey++;
+              break;
+
+            case ED_FIRE1_1 :
+              place_tile(ex,ey,ed_tile);
+              break;
+
+            case ED_FIRE2_1 :
+              editor_mode = ED_MODE_MAIN_MENU;
+              break;
+          }
+
+          break;
+
+        case ED_MODE_ENEMIES :
+          /* Place enemies onto map */
+          switch (ed_key) {
+            case ED_LEFT1 :
+              if (ex>1) ex--;
+              break;
+
+            case ED_RIGHT1 :
+              if (ex<VIS_TILES_H) ex++;
+              break;
+
+            case ED_UP1 :
+              if (ey>1) ey--;
+              break;
+
+            case ED_DOWN1 :
+              ey++;
+              break;
+
+            case ED_LEFT2 :
+              if (ed_tile>0) ed_tile--;
+              break;
+
+            case ED_RIGHT2 :
+              if (enemy_lib[ed_tile+1]!=255) ed_tile++;
+              break;
+
+            case ED_FIRE1_1 :
+              if (ed_active_nme_count<ENEMY_COUNT) {
+                place_tile(ex,ey,12);
+                create_new_enemy(enemy_lib[ed_tile],ex,ey);
+                ed_active_nme_count++;
+              }
+              break;
+
+            case ED_FIRE2_1 :
+              editor_mode = ED_MODE_MAIN_MENU;
+              break;
+          }
+
+          break;
+
+        case ED_MODE_BLOKES :
+          switch (ed_key) {
+            case ED_UP1 :
+              if (players[ed_tile].ypos>16) players[ed_tile].ypos -= 16;
+              break;
+            case ED_DOWN1 :
+              players[ed_tile].ypos += 16;
+              break;
+            case ED_LEFT1 :
+              if (players[ed_tile].xpos>16) players[ed_tile].xpos -= 16;
+              break;
+            case ED_RIGHT1 :
+              players[ed_tile].xpos += 16;
+              break;
+            case ED_RIGHT2 :
+              ed_tile++;
+              if (ed_tile==4) ed_tile = 0;
+              break;
+            case ED_LEFT2 :
+              ed_tile--;
+              if (ed_tile==255) ed_tile=3;
+              break;
+            case ED_FIRE1_1 :
+              editor_mode = ED_MODE_MAIN_MENU;
+              break;
+          }
+
+          break;
+
+        case ED_MODE_MAIN_MENU :
+          switch (ed_key) {
+            case ED_UP1 :
+              ed_choice--;
+              if (ed_choice==255) ed_choice = ed_opt_count-1;
+              break;
+
+            case ED_DOWN1 :
+              ed_choice++;
+              if (ed_choice==ed_opt_count) ed_choice = 0;
+              break;
+
+            case ED_FIRE1_1 :
+              switch (ed_choice) {
+                case 0 : /* Edit floor */
+                  editor_mode = ED_MODE_TILES;
+                  ed_tile = 0;
+                  break;
+
+                case 1 : /* Edit enemies */
+                  editor_mode = ED_MODE_ENEMIES;
+                  ed_tile = 0;
+                  break;
+
+		case 5 : /* Edit bloke positions */
+		  editor_mode = ED_MODE_BLOKES;
+		  ed_tile = 0;
+		  break;
+
+                default : /* Further menus required... */
+                  ed_action_reqd = 1;
+                  break;
+              }
+
+              break;
+
+	    case ED_LEFT1 :
+	      if (ed_choice==6) {
+	        /* Change graphics set */
+	        if (ed_gfx_set>0) {
+	          ed_gfx_set--;
+  		  msg[74][15] = '1'+ed_gfx_set;
+	          load_bgnd_gfx(ed_gfx_set);
+	        }
+	      }
+
+              break;
+
+            case ED_RIGHT1 :
+              if (ed_choice==6) {
+                /* Change graphics set */
+                if (ed_gfx_set<3) {
+                  ed_gfx_set++;
+  		  msg[74][15] = '1'+ed_gfx_set;
+                  load_bgnd_gfx(ed_gfx_set);
+                }
+              }
+
+              break;
+          }
+
+          highlighted_item(opt_id[ed_choice]);
+
+          maintain_menu();
+
+          break;
+      }
+
+      swapscreen();
+    } while (!ed_action_reqd);
+
+    close_menu();
+
+    switch (ed_choice) {
+      case 2 : /* get name for level */
+      	editor_mode = ED_MODE_LEV_NAME;
+        enter_level_name();
+        break;
+
+      case 3 : /* save level data */
+        editor_mode = ED_MODE_SAVE;
+        save_level();
+        break;
+
+      case 4 : /* load level data */
+        editor_mode = ED_MODE_LOAD;
+        load_level();
+        break;
+    }
+
+    editor_mode = ED_MODE_MAIN_MENU;
+  } while (ed_choice!=ed_opt_count-1);
+#endif
+}
+
+void enter_level_name(void)
+{
+#ifdef ALLOW_EDITOR
+  /* Let user type in a name for this level */
+  int finished;
+
+  add_new_menu_item(msg[54],0,80,CENTRE+CYAN);
+
+  text_entry_init(ed_level_name,20,120,LEFT_ALIGN,30);
+
+  open_menu();
+
+  do {
+    /* Update screen */
+    draw_menu_screen();
+
+    finished = text_entry_maintain();
+
+    maintain_menu();
+
+    swapscreen();
+  } while (!finished);
+
+  text_entry_end(ed_level_name);
+
+  close_menu();
+
+  construct_game_screen(0,1);
+#endif
+}
+
+void save_level(void)
+{
+#ifdef ALLOW_EDITOR
+  /* Save level data */
+  int   finished;
+  char  path[] = "<Obey$dir>.levdata.";
+  char  fullpath[32];
+  FILE* f;
+
+  add_new_menu_item(msg[55],0,80,CENTRE+CYAN);
+  add_new_menu_item(msg[56],0,110,CENTRE+CYAN);
+
+  text_entry_init(ed_fname,60,140,LEFT_ALIGN,10);
+
+  open_menu();
+
+  finished = 0;
+
+  do {
+    /* Update screen */
+    draw_menu_screen();
+
+    finished = text_entry_maintain();
+
+    maintain_menu();
+
+    swapscreen();
+  } while (!finished);
+
+  text_entry_end(ed_fname);
+
+  close_menu();
+
+  /* Construct our full filename, with path */
+
+  strcpy(fullpath,path);
+  strcat(fullpath,ed_fname);
+
+  /* Attempt to open file for save */
+  f = fopen(fullpath,"wb");
+
+  if (f==NULL) {
+    ubyte ed_key;
+
+    add_new_menu_item(msg[58],0,80,CENTRE+CYAN);
+    add_new_menu_item(msg[6],0,140,CENTRE+CYAN);
+
+    open_menu();
+
+    do {
+      draw_menu_screen();
+
+      maintain_menu();
+
+      /* Process keyboard controls */
+      ed_key = read_keyboard_for_edit();
+
+      swapscreen();
+    } while (ed_key!=ED_FIRE1_1);
+
+    close_menu();
+  }
+  else {
+    int x,y;
+
+    /* File has been successfully opened for save */
+
+    /* First, write editor map data */
+    fputc(LEV_FILE_MAP_CHUNK,f);
+    for (y=0; y<32; y++) {
+      for (x=0; x<32; x++) {
+        fputc(editor_map[y][x],f);
+      }
+    }
+
+    /* Write enemy data - enemy count first */
+    fputc(LEV_FILE_NME_CHUNK,f);
+    fputc(ed_active_nme_count,f);
+
+    for (x=0; x<ENEMY_COUNT; x++) {
+      if (nme_unit[x].status & EXISTS) {
+        /* Store details for this enemy */
+        fputc(nme_unit[x].x>>4,f);
+        fputc(nme_unit[x].y>>4,f);
+        fputc(nme_unit[x].type,f);
+      }
+    }
+
+    /* Now write level name */
+    fputc(LEV_FILE_NAME_CHUNK,f);
+    x = 0;
+    do {
+      fputc(ed_level_name[x],f);
+    } while (ed_level_name[x++]);
+
+    /* Analyse pipe connectivity */
+    fputc(LEV_FILE_PIPE_CHUNK,f);
+    output_pipe_connections(f);
+
+    /* Write initial player positions */
+    fputc(LEV_FILE_PLR_POS,f);
+    for (x=0; x<4; x++) {
+      fputc(players[x].xpos>>4,f);
+      fputc(players[x].ypos>>4,f);
+    }
+
+    /* Tell 'em which graphics set we're using */
+    fputc(LEV_FILE_GFX_CHUNK,f);
+    fputc(ed_gfx_set,f);
+
+    /* End of save data - close file */
+    fputc(LEV_FILE_END,f);
+    fclose(f);
+  }
+
+  construct_game_screen(0,1);
+#endif
+}
+
+ubyte ed_pipe[32][32];
+ubyte pipe_check_old[] = {
+  0,
+  LEFT+RIGHT,
+  UP+DOWN,
+  LEFT+RIGHT+UP+DOWN,
+  UP+LEFT,
+  DOWN+LEFT,
+  UP+RIGHT,
+  DOWN+RIGHT,
+  RIGHT,
+  LEFT,
+  DOWN,
+  UP
+};
+
+void trace_pipe_old(int x, int y, int num)
+{
+#ifdef ALLOW_EDITOR
+  ubyte type;
+
+  type = editor_map[y][x];
+
+  if (ed_pipe[y][x] == 0 && type>0 && type<12) {
+    ed_pipe[y][x] = num;
+
+    type = pipe_check[type];
+
+    if (type) {
+      if (type & LEFT) trace_pipe(x-1,y,num);
+      if (type & RIGHT) trace_pipe(x+1,y,num);
+      if (type & UP) trace_pipe(x,y-1,num);
+      if (type & DOWN) trace_pipe(x,y+1,num);
+    }
+  }
+#endif
+}
+
+void output_pipe_connections(FILE *f)
+{
+#ifdef ALLOW_EDITOR
+  /* Trace pipe networks to compile lists of endings */
+  int x,y;
+  ubyte t, pipe_ref;
+
+  /* First, blank pipe network data */
+  for (y=0; y<32; y++) {
+    for (x=0; x<32; x++) {
+      ed_pipe[y][x] = 0;
+    }
+  }
+
+  /* Scan editor map for pipes */
+  pipe_ref = 1;
+  for (y=1; y<32; y++) {
+    for (x=1; x<32; x++) {
+      t = editor_map[y][x];
+
+      if (ed_pipe[y][x]==0 && t>0 && t<12) {
+        /* It's part of an unmapped pipe */
+        trace_pipe(x,y,pipe_ref++);
+      }
+    }
+  }
+
+  /* Output list of endings per pipe network */
+  while (--pipe_ref) {
+    /* Output "list starts here" code */
+    fputc(255,f);
+    fputc(0,f);
+
+    for (y=1; y<32; y++) {
+      for (x=1; x<32; x++) {
+        if (ed_pipe[y][x] == pipe_ref &&
+            editor_map[y][x] >= 8 &&
+            editor_map[y][x] <= 11) {
+
+          /* Add this pipe ending to the list */
+          fputc(x,f);
+          fputc(y,f);
+        }
+      }
+    }
+  }
+
+  /* Output "End of pipes" code */
+  fputc(255,f);
+  fputc(255,f);
+#endif
+}
+
+void load_level(void)
+{
+  /* Load level data */
+  int   finished;
+  char  path[] = "<Obey$Dir>.levdata.";
+  char  fullpath[32];
+  FILE* f;
+
+  add_new_menu_item(msg[59],0,80,CENTRE+CYAN);
+  add_new_menu_item(msg[60],0,110,CENTRE+CYAN);
+
+  text_entry_init(ed_fname,60,140,LEFT_ALIGN,10);
+
+  open_menu();
+
+  finished = 0;
+
+  do {
+    /* Update screen */
+    draw_menu_screen();
+
+    finished = text_entry_maintain();
+
+    maintain_menu();
+
+    swapscreen();
+  } while (!finished);
+
+  text_entry_end(ed_fname);
+
+  close_menu();
+
+  /* Construct our full filename, with path */
+
+  strcpy(fullpath,path);
+  strcat(fullpath,ed_fname);
+
+  /* Attempt to open file for load */
+  f = fopen(fullpath,"rb");
+
+  if (f==NULL) {
+    ubyte ed_key;
+
+    add_new_menu_item(msg[58],0,80,CENTRE+CYAN);
+    add_new_menu_item(msg[6],0,140,CENTRE+CYAN);
+
+    open_menu();
+
+    do {
+      draw_menu_screen();
+
+      maintain_menu();
+
+      /* Process keyboard controls */
+      ed_key = read_keyboard_for_edit();
+
+      swapscreen();
+    } while (ed_key!=ED_FIRE1_1);
+
+    close_menu();
+  }
+  else {
+    int ex, ey, et;
+    int x,y;
+
+    /* File has been successfully opened for load */
+    finished = 0;
+
+    do {
+      /* Get type of next chunk */
+      et = fgetc(f);
+
+      switch (et) {
+        case LEV_FILE_MAP_CHUNK :
+          /* First, read editor map data */
+    	  for (y=0; y<32; y++) {
+      	    for (x=0; x<32; x++) {
+              place_tile(x,y,fgetc(f));
+      	    }
+    	  }
+
+    	  break;
+
+        case LEV_FILE_NME_CHUNK :
+          /* Read enemy data - enemy count first */
+	  init_enemies();
+
+          ed_active_nme_count = fgetc(f);
+
+#ifndef NO_PRINTF
+          printf("We think there are %d enemies here\n",ed_active_nme_count);
+#endif
+
+          for (x=0; x<ed_active_nme_count; x++) {
+      	    /* Read details for this enemy */
+      	    ex = fgetc(f);
+      	    ey = fgetc(f);
+      	    et = fgetc(f);
+
+            create_new_enemy(et,ex,ey);
+    	  }
+
+    	  break;
+
+        case LEV_FILE_NAME_CHUNK :
+          /* Now read level name */
+    	  x = 0;
+    	  do {
+      	    ed_level_name[x] = fgetc(f);
+    	  } while (ed_level_name[x++]);
+
+    	  break;
+
+        case LEV_FILE_PIPE_CHUNK :
+    	  /* Pipe connectivity goes here... though we don't need it as
+    	  ** it gets rebuilt when the level is saved. (Just skip it)
+    	  */
+    	  do {
+    	    ex = fgetc(f);
+    	    ey = fgetc(f);
+    	  } while (!(ex==255 && ey==255));
+
+    	  break;
+
+    	case LEV_FILE_END :
+    	  finished = 1;
+    	  break;
+
+    	case LEV_FILE_PLR_POS :
+    	  for (ex=0; ex<4; ex++) {
+    	    players[ex].xpos = fgetc(f)<<4;
+    	    players[ex].ypos = fgetc(f)<<4;
+    	  }
+
+    	  break;
+
+    	case LEV_FILE_GFX_CHUNK :
+    	  ed_gfx_set = fgetc(f);
+    	  break;
+      }
+    } while (!finished);
+
+    /* End of load data - close file */
+    fclose(f);
+  }
+
+  load_bgnd_gfx(ed_gfx_set);
+
+  construct_game_screen(0,1);
+}
+

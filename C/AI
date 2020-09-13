@@ -1,0 +1,651 @@
+/***************************************************************************
+** Marsquake AI module
+*/
+
+#include "mqhead.h"
+#include "debug.h"
+
+#define THREAT_MAP_X 21
+#define THREAT_MAP_Y 16
+
+#define LOOKAHEAD    4
+
+#define AI_LEFT      0
+#define AI_RIGHT     1
+#define AI_UP        2
+#define AI_DOWN      3
+
+typedef struct {
+  sbyte	threat;
+  ubyte	access;
+} THREAT_CELL;
+
+THREAT_CELL threat_map[16][32];
+
+THREAT_CELL explore_map[LOOKAHEAD*2 + 1][LOOKAHEAD*2 +1];
+
+sbyte minthreat[4];
+sbyte maxthreat[4];
+sbyte targthreat[4];
+sbyte targbthreat[4];
+ubyte targdist[4];
+ubyte dir_avail[4];
+
+ubyte seek_dir;
+
+int gen_ai_timer;
+
+ubyte bomb_debug_trigger;
+ubyte gen_debug_trigger;
+
+ubyte ai_plr_x, ai_plr_y, ai_plr_girth;
+
+int dir_off[][2] = {
+  -1,0,
+  1,0,
+  0,-1,
+  0,1
+};
+
+ubyte ai_2_joy[] = {
+  LEFT,
+  RIGHT,
+  UP,
+  DOWN
+};
+
+ubyte ai_turn_left[] = {
+  AI_DOWN,
+  AI_UP,
+  AI_LEFT,
+  AI_RIGHT
+};
+
+sbyte bonus_threat[] = {
+  0,
+  0,
+  4, /* +flame */
+  4, /* +bomb */
+  5, /* mega */
+  4, /* rubber */
+  0, /* flower */
+  4, /* push */
+  4, /* throw */
+  0, /* ? */
+  4, /* suit */
+  4, /* For future expansion... */
+  4,
+  4,
+  4,
+  4,
+  4,
+  4
+};
+
+void dump_threat_map(void)
+{
+#ifndef NO_LOGFILE
+  ubyte x,y;
+
+  return;
+
+  for (y=0; y<THREAT_MAP_Y; y++) {
+    for (x=0; x<THREAT_MAP_X; x++) {
+      logfile("%02x ",threat_map[y][x].threat & 0xff);
+    }
+    logfile("\n");
+  }
+#endif
+}
+
+void compute_threat_map(void)
+{
+  int x,y, xo,yo, t, l, trigger, t2;
+  int b;
+
+  /* Keep clock running */
+  gen_ai_timer++;
+
+  for (y=0; y<THREAT_MAP_Y; y++) {
+    for (x=0; x<THREAT_MAP_X; x++) {
+      /* reset threat level */
+      threat_map[y][x].threat = 0;
+
+      /* Can we walk on this tile? */
+      if ((floor_map[y][x].status&128)==0) {
+        /* Blocking tile */
+        threat_map[y][x].access = 0;
+      }
+      else {
+        if (floor_map[y][x].extra1&128) {
+          /* Bomb */
+          threat_map[y][x].access = 0;
+        }
+        else {
+          if (floor_map[y][x].blast) {
+            /* Explosion/fire */
+            threat_map[y][x].access = 0;
+          }
+          else {
+            threat_map[y][x].access = 1;
+          }
+        }
+      }
+    }
+  }
+
+  /* Mark blockages */
+  for (y=1; y<THREAT_MAP_Y; y++) {
+    for (x=1; x<THREAT_MAP_X; x++) {
+      /* Is this tile a blockage? */
+      if (!(floor_map[y][x].status&128) &&
+           (floor_map[y][x].normal_stat&128)) {
+
+        /* Blockage! */
+        threat_map[y-1][x].threat--;
+        threat_map[y+1][x].threat--;
+        threat_map[y][x-1].threat--;
+        threat_map[y][x+1].threat--;
+      }
+    }
+  }
+
+  /* Add each bomb and it's explosion range to the threat map */
+  bomb_debug_trigger = 0;
+  for (b=0; b<64; b++) {
+    if ((bombs[b].status&(1<<4))!=0) {
+      /* Estimated potential threat */
+      t = (255-bombs[b].timer)>>3;
+      if (t<8) t=8;
+
+      /*printf("Adding bomb threat %d...\n",t);*/
+      bomb_debug_trigger = 1;
+
+      x = bombs[b].xpos>>4;
+      y = bombs[b].ypos>>4;
+
+      /* add explosion length to map */
+      if (threat_map[y][x].threat<t) threat_map[y][x].threat = t;
+      l = (bombs[b].owner == 255) ? 4:(players[bombs[b].owner].flames+4);
+
+      if (bombs[b].type == 2) {
+        /* Flower bomb */
+        for (xo=x-1,t2=t; threat_map[y][xo].access==1 && xo>x-l; xo--) {
+          if (threat_map[y][xo].threat<t2) threat_map[y][xo].threat = t2;
+
+          if (xo == x-2) {
+            for (yo=y-1; threat_map[yo][xo].access==1 && yo>y-4; yo--) {
+              if (threat_map[yo][xo].threat<t2) threat_map[yo][xo].threat = t2;
+            }
+
+            for (yo=y+1; threat_map[yo][xo].access==1 && yo<y+4; yo++) {
+              if (threat_map[yo][xo].threat<t2) threat_map[yo][xo].threat = t2;
+            }
+          }
+
+          if (t2>8) t2--;
+        }
+
+        for (xo=x+1,t2=t; threat_map[y][xo].access==1 && xo<x+l; xo++) {
+          if (threat_map[y][xo].threat<t2) threat_map[y][xo].threat = t2;
+
+          if (xo == x+2) {
+            for (yo=y-1; threat_map[yo][xo].access==1 && yo>y-4; yo--) {
+              if (threat_map[yo][xo].threat<t2) threat_map[yo][xo].threat = t2;
+            }
+
+            for (yo=y+1; threat_map[yo][xo].access==1 && yo<y+4; yo++) {
+              if (threat_map[yo][xo].threat<t2) threat_map[yo][xo].threat = t2;
+            }
+          }
+
+          if (t2>8) t2--;
+        }
+
+        for (yo=y-1,t2=t; threat_map[yo][x].access==1 && yo>y-l; yo--) {
+          if (threat_map[yo][x].threat<t2) threat_map[yo][x].threat = t2;
+
+          if (yo == y-2) {
+            for (xo=x-1; threat_map[yo][xo].access==1 && xo>x-4; xo--) {
+              if (threat_map[yo][xo].threat<t2) threat_map[yo][xo].threat = t2;
+            }
+
+            for (xo=x+1; threat_map[yo][xo].access==1 && xo<x+4; xo++) {
+              if (threat_map[yo][xo].threat<t2) threat_map[yo][xo].threat = t2;
+            }
+          }
+
+          if (t2>8) t2--;
+        }
+
+        for (yo=y+1,t2=t; threat_map[yo][x].access==1 && yo<y+l; yo++) {
+          if (threat_map[yo][x].threat<t2) threat_map[yo][x].threat = t2;
+
+          if (yo == y+2) {
+            for (xo=x-1; threat_map[yo][xo].access==1 && xo>x-4; xo--) {
+              if (threat_map[yo][xo].threat<t2) threat_map[yo][xo].threat = t2;
+            }
+
+            for (xo=x+1; threat_map[yo][xo].access==1 && xo<x+4; xo++) {
+              if (threat_map[yo][xo].threat<t2) threat_map[yo][xo].threat = t2;
+            }
+          }
+
+          if (t2>8) t2--;
+        }
+      }
+      else {
+        /* Normal/mega bomb */
+        for (xo=x-1,t2=t; threat_map[y][xo].access==1 && xo>x-l; xo--) {
+          if (threat_map[y][xo].threat<t2) threat_map[y][xo].threat = t2;
+          if (t2>8) t2--;
+        }
+
+        for (xo=x+1,t2=t; threat_map[y][xo].access==1 && xo<x+l; xo++) {
+          if (threat_map[y][xo].threat<t2) threat_map[y][xo].threat = t2;
+          if (t2>8) t2--;
+        }
+
+        for (yo=y-1,t2=t; threat_map[yo][x].access==1 && yo>y-l; yo--) {
+          if (threat_map[yo][x].threat<t2) threat_map[yo][x].threat = t2;
+          if (t2>8) t2--;
+        }
+
+        for (yo=y+1,t2=t; threat_map[yo][x].access==1 && yo<y+l; yo++) {
+          if (threat_map[yo][x].threat<t2) threat_map[yo][x].threat = t2;
+          if (t2>8) t2--;
+        }
+      }
+    }
+  }
+
+  for (b=0; b<BONUS_COUNT; b++) {
+    if (bonus_array[b].status&128) {
+      /* There's a bonus here! */
+      threat_map[bonus_array[b].y>>3][bonus_array[b].x>>3].threat -=
+          bonus_threat[(bonus_array[b].status>>3)&15];
+    }
+  }
+
+  /*if (trigger) dump_threat_map();*/
+}
+
+void explore_location(ubyte mx, ubyte my, sbyte threat, ubyte lx, ubyte ly, ubyte len_to_go)
+{
+  sbyte newthreat, nt2;
+
+  if (len_to_go == LOOKAHEAD) {
+    /* First step in explore direction - assume not available */
+    dir_avail[seek_dir] = 0;
+  }
+
+  /* Have we come our max distance? */
+  if (len_to_go == 0) return;
+
+  /* Have we looked here before? */
+  if (explore_map[ly][lx].access != 0) return;
+
+  /* Mark our presence here */
+  explore_map[ly][lx].access = 1;
+
+  /* Is this tile accessible? */
+  if (threat_map[my][mx].access == 0) return;
+
+  if (len_to_go == LOOKAHEAD) {
+    /* First step in explore direction - now know to be available */
+    dir_avail[seek_dir] = 1;
+  }
+
+  /* Calculate new threat level */
+  newthreat = threat + threat_map[my][mx].threat;
+
+  /* How does new threat compare with our minimum and maximum threats? */
+  if (newthreat<minthreat[seek_dir]) minthreat[seek_dir] = newthreat;
+  if (newthreat>maxthreat[seek_dir]) maxthreat[seek_dir] = newthreat;
+
+  /* What about threat of this particular square? */
+  if (threat_map[my][mx].threat < targthreat[seek_dir]) {
+    targthreat[seek_dir] = threat_map[my][mx].threat;
+    targdist[seek_dir] = LOOKAHEAD - len_to_go;
+  }
+
+  /* What would the threat of this tile be if we'd dropped a bomb? */
+  nt2 = newthreat;
+  if ((mx == ai_plr_x && abs(my-ai_plr_y)<ai_plr_girth) ||
+      (my == ai_plr_y && abs(mx-ai_plr_x)<ai_plr_girth)) {
+    if (newthreat<8) nt2 = 8;
+  }
+
+  if (nt2 < targbthreat[seek_dir]) {
+    targbthreat[seek_dir] = nt2;
+  }
+
+  /* Now continue exploring */
+  explore_location(mx,my-1,newthreat,lx,ly-1,len_to_go-1); /* up */
+  explore_location(mx,my+1,newthreat,lx,ly+1,len_to_go-1); /* down */
+  explore_location(mx-1,my,newthreat,lx-1,ly,len_to_go-1); /* left */
+  explore_location(mx+1,my,newthreat,lx+1,ly,len_to_go-1); /* right */
+}
+
+void route_explore(ubyte x, ubyte y)
+{
+  ubyte lx,ly;
+
+  /* Clear search square */
+  for (ly=0; ly<(LOOKAHEAD*2+1); ly++) {
+    for (lx=0; lx<(LOOKAHEAD*2+1); lx++) {
+      explore_map[ly][lx].access = 0;
+    }
+  }
+
+  /* Reset direction stats */
+  for (lx=0; lx<4; lx++) {
+    minthreat[lx] = 120;
+    maxthreat[lx] = -120;
+    targthreat[lx] = 120;
+    targbthreat[lx] = 120;
+    targdist[lx] = 120;
+  }
+
+  explore_map[LOOKAHEAD][LOOKAHEAD].access = 1;
+
+  seek_dir = AI_UP;
+  explore_location(x,y-1,0,LOOKAHEAD,LOOKAHEAD-1,LOOKAHEAD);
+  seek_dir = AI_DOWN;
+  explore_location(x,y+1,0,LOOKAHEAD,LOOKAHEAD+1,LOOKAHEAD);
+  seek_dir = AI_LEFT;
+  explore_location(x-1,y,0,LOOKAHEAD-1,LOOKAHEAD,LOOKAHEAD);
+  seek_dir = AI_RIGHT;
+  explore_location(x+1,y,0,LOOKAHEAD+1,LOOKAHEAD,LOOKAHEAD);
+}
+
+void prepare_ai(void)
+{
+  /* Run all stuff req'd for AI code for all AI players */
+  compute_threat_map();
+}
+
+ubyte player_in_range(int x, int y, int ourp)
+{
+  int dir, l, p;
+  int cx,cy;
+
+  /* Check each direction */
+  for (dir=0; dir<4; dir++) {
+    cx = x + dir_off[dir][0];
+    cy = y + dir_off[dir][1];
+    /* Check length of explosion */
+    for (l = players[ourp].flames;
+    	 l && (floor_map[cy][cx].status&128); l--) {
+      /* Looking for players */
+      for (p=0; p<4; p++) {
+        if (p!=ourp) {
+          if (floor_map[cy][cx].men_here & (1<<p)) {
+            /* Target sighted */
+            return 1;
+          }
+        }
+      }
+
+      cx += dir_off[dir][0];
+      cy += dir_off[dir][1];
+    }
+  }
+
+  return 0;
+}
+
+ubyte new_rnd_dir[4][4] = {
+  AI_LEFT, AI_UP, AI_DOWN, AI_RIGHT, /* Current = AI_LEFT */
+  AI_RIGHT, AI_UP, AI_DOWN, AI_LEFT, /* Current = AI_RIGHT */
+  AI_UP, AI_LEFT, AI_RIGHT, AI_DOWN, /* Current = AI_UP */
+  AI_DOWN, AI_LEFT, AI_RIGHT, AI_UP, /* Current = AI_DOWN */
+};
+
+ubyte ai_turn_random(ubyte dir)
+{
+  int v;
+  ubyte c;
+
+  v = rnd_unsync()&255;
+
+  /* Most likely to continue in current direction */
+  if (v<128) c=0;
+  else if (v<235) c=(v&1) ? 1:2;
+  else c = 3;
+
+  return new_rnd_dir[dir][c];
+}
+
+void update_ai(ubyte plr)
+{
+  ubyte dir, md, x, y, nd, dist, p_in_range, can_bomb;
+  sbyte min, min2, minb;
+  int	newjoy;
+  ubyte	poss_dir[4];
+
+  /* Update AI for specified player */
+  if ((players[plr].xpos&15) || (players[plr].ypos&15)) {
+    /* Not entirely aligned over tile - can't move yet */
+    ctrl_word_table[players[plr].ctrl_word] = newjoy;
+
+    return;
+  }
+
+  x = ai_plr_x = players[plr].xpos>>4;
+  y = ai_plr_y = players[plr].ypos>>4;
+  ai_plr_girth = players[plr].flames;
+  route_explore(ai_plr_x,ai_plr_y);
+
+  /* Are we able to drop a bomb? Assume yes */
+  can_bomb = 1;
+
+  if (mystery[plr][0] == 3) {
+    /* No bomb token in effect */
+    can_bomb = 0;
+#ifndef NO_LOGFILE
+    if (gen_debug_trigger) logfile("plr %d : no bomb token [%d]\n",plr,mystery[plr][1]);
+#endif
+  }
+  else if (players[plr].bombs == players[plr].bombs_layed) {
+    /* All available bombs have been dropped */
+    can_bomb = 0;
+#ifndef NO_LOGFILE
+    if (gen_debug_trigger) logfile("plr %d : all dropped\n",plr);
+#endif
+  }
+  else if (floor_map[y][x].blast) {
+    /* Don't want to drop on an exploding tile */
+    can_bomb = 0;
+#ifndef NO_LOGFILE
+    if (gen_debug_trigger) logfile("plr %d : tile exp\n",plr);
+#endif
+  }
+
+  /* Have we previously dropped a bomb? */
+  if (floor_map[y][x].extra1&128) {
+    /* Not bothered about player being in range */
+    p_in_range = 0;
+  }
+  else {
+    /* Are we able to drop a bomb? */
+    if (can_bomb) {
+      /* See if there is a player in range */
+      p_in_range = player_in_range(x,y,plr);
+    }
+    else {
+      /* Can't drop a bomb - not interested in other players */
+      p_in_range = 0;
+    }
+  }
+
+  /* For each of the four possible directions we know :
+  **  - whether the route is available (dir_avail)
+  **  - the lowest threat level of all the tiles visited
+  **  - the lowest accumulated threat level path found
+  **  - the highest accumulated threat level path found
+  **
+  ** Primary target should be tile with lowest threat rating.
+  ** If more than one route is found with minimum rating, choose path
+  ** with lowest accumulated threat path.
+  */
+
+  /* What is the minimum threat of reachable tiles? */
+  min = targthreat[0];
+  minb = targbthreat[0];
+  for (dir=1; dir<4; dir++) {
+    if (dir_avail[dir]) {
+      if (targthreat[dir]<min) min = targthreat[dir];
+
+      if (targbthreat[dir]<minb) minb = targbthreat[dir];
+    }
+  }
+
+  /* Out of all directions that lead to a tile with minimum threat,
+  ** which have the safest route?
+  */
+  min2 = 120;
+  md = 5;
+  dist = 120;
+  for (dir=0; dir<4; dir++) {
+#ifndef NO_LOGFILE
+    if (gen_debug_trigger) {
+      logfile("dir %d%s: targt %d, mint %d, targd %d\n",
+      	      dir,
+      	      (dir_avail[dir]) ? " ":"*",
+      	      targthreat[dir],
+      	      minthreat[dir],
+      	      targdist[dir]);
+    }
+#endif
+    if (targthreat[dir]==min && dir_avail[dir]) {
+      if (minthreat[dir]<=min2) {
+        if (targdist[dir]<=dist) {
+          min2 = minthreat[dir];
+          md = dir;
+          dist = targdist[dir];
+        }
+      }
+    }
+  }
+
+  /* If target threat is safer than threat of tile we're on, move */
+  if (min<threat_map[y][x].threat) {
+    if (p_in_range) {
+      /* Drop a bomb! */
+      newjoy = FIRE1;
+    }
+    else if (threat_map[y][x].threat<=0) {
+      /* We're nice 'n' safe here, so do we really want to move? */
+      if (threat_map[y+dir_off[md][1]]
+      	            [x+dir_off[md][0]].threat <= 0) {
+        /* Ok, next square is also safe... */
+        newjoy = ai_2_joy[md];
+
+#ifndef NO_LOGFILE
+        if (gen_debug_trigger) {
+          logfile("1) Moving from safe to safe square (dir %d)\n",md);
+        }
+#endif
+      }
+      else {
+        /* Moving from safe square to not so safe square - NOT!! */
+        newjoy = 0;
+
+#ifndef NO_LOGFILE
+        if (gen_debug_trigger) {
+          logfile("Refuse to move from threat %d to %d\n",
+          	  threat_map[y][x].threat,
+          	  threat_map[y+dir_off[md][1]]
+      	            [x+dir_off[md][0]].threat);
+      	}
+#endif
+      }
+    }
+    else {
+      /* Pretty dangerous to stay put anyway */
+      newjoy = ai_2_joy[md];
+
+#ifndef NO_LOGFILE
+      if (gen_debug_trigger) {
+        logfile("2) Moving from unsafe to safe square\n");
+      }
+#endif
+    }
+  }
+  else {
+    /* If threat of tile we're on is -ve, drop a bomb, else wait */
+    if (can_bomb && min2<=0 && minb<=0 && threat_map[y][x].threat<0) {
+      /* Drop! */
+      newjoy = FIRE1;
+    }
+    else {
+      /* Wait! */
+      ubyte facedir;
+
+      newjoy = 0;
+      facedir = (players[plr].status>>1)&3;
+
+      if (p_in_range) {
+        /* Drop bomb */
+        newjoy = FIRE1;
+      }
+      else if (dir_avail[facedir]) {
+        if (threat_map[y+dir_off[facedir][1]][x+dir_off[facedir][0]].threat <= 0) {
+          newjoy = ai_2_joy[facedir];
+
+#ifndef NO_LOGFILE
+          if (gen_debug_trigger) {
+            logfile("3) wait state : no threat in current direction\n");
+          }
+#endif
+
+        }
+      }
+      else {
+        if (gen_ai_timer&(512+256)) {
+          /* Compute random path */
+          facedir = ai_turn_random(facedir);
+        }
+        else {
+          /* Follow left wall */
+          facedir = ai_turn_left[facedir];
+        }
+
+        if (dir_avail[facedir]) {
+          if (threat_map[y+dir_off[facedir][1]][x+dir_off[facedir][0]].threat <= 0) {
+            newjoy = ai_2_joy[facedir];
+
+#ifndef NO_LOGFILE
+            if (gen_debug_trigger) {
+              logfile("4) left wall move safe\n");
+            }
+#endif
+          }
+        }
+        else {
+          if (threat_map[y][x].threat >= 0 &&
+              min2 >= 0 &&
+              min >= 0 &&
+              minb >= 0 &&
+              (rnd_unsync()&15) > 13) newjoy = FIRE1;
+          else newjoy = 0;
+
+#ifndef NO_LOGFILE
+          if (gen_debug_trigger)
+            logfile("waiting - here %d, there %d, everywhere %d, back %d\n",threat_map[y][x].threat,min2,min,minb);
+#endif
+        }
+      }
+    }
+  }
+
+  if (ctrl_word_table[players[0].ctrl_word] & FIRE2) {
+    gen_debug_trigger = 0; /* was 1; */
+    /* dump_threat_map(); */
+  }
+  else gen_debug_trigger = 0;
+
+  /* Set control data */
+  ctrl_word_table[players[plr].ctrl_word] = newjoy;
+}

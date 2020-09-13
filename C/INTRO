@@ -1,0 +1,1005 @@
+/* Marsquake intro sequence and instructions */
+
+#include "mqhead.h"
+#include "pakfs.h"
+
+typedef struct {
+  int	item_id;
+  int	end_time;
+} intro_item;
+
+typedef struct {
+  int	align_col;
+  char*	text;
+  int	x;
+  int	y;
+  int	life;
+  int	time_until_next;
+} seq_item;
+
+typedef struct {
+  int	align_col;
+  char*	text;
+  int	x;
+  int	y;
+} page_item;
+
+#define MAX_ACTIVE_ITEMS 16
+
+intro_item active_item[MAX_ACTIVE_ITEMS];
+
+void console(void);
+
+
+seq_item intro_sequence[] = {
+  CENTRE+ICON,
+  (char *) 16,
+  0,20,
+  1950,
+  150,
+
+  CENTRE+RED,
+  "LOCATION : MARS",
+  0,140,
+  500,
+  100,
+
+  CENTRE+RED,
+  "DATE : 8 MAY 2031",
+  0,160,
+  400,
+  500,
+
+  CENTRE+YELLOW,
+  "MARTIAN RESEARCH CENTRE",
+  0,140,
+  500,
+  100,
+
+  CENTRE+YELLOW,
+  "POPULATION : 2,164",
+  0,160,
+  400,
+  500,
+
+  ICON+CENTRE,
+  (char *) 15,
+  0,140,
+  800,
+  50,
+
+  ICON+CENTRE,
+  (char *) 24,
+  0,170,
+  800,
+  50,
+
+  ICON+CENTRE,
+  (char *) 25,
+  0,220,
+  800,
+  -1,
+};
+
+/* Help pages */
+page_item help_page1[] = {
+  CENTRE+YELLOW, "HELP PAGE 1", 0, 80,
+  CENTRE+RED,    "la de da", 0, 120,
+  0,NULL,0,0
+};
+
+page_item help_page_int1[] = {
+  CENTRE+YELLOW, "THE MARTIAN BASE", 0, 80,
+  CENTRE+GREEN, "the base, built beneath the", 0, 110,
+  CENTRE+GREEN, "surface of mars, consists of", 0, 130,
+  CENTRE+GREEN, "six distinct sections.", 0, 150,
+  0,NULL,0,0
+};
+
+page_item help_page_int2[] = {
+  CENTRE+YELLOW, "THE MARTIAN BASE", 0, 80,
+  LEFT_ALIGN+GREEN, "1. entrance tunnels and storage", 10, 105,
+  LEFT_ALIGN+GREEN, "2. living quarters", 10, 125,
+  LEFT_ALIGN+GREEN, "3. research labs", 10 ,145,
+  LEFT_ALIGN+GREEN, "4. power generation", 10, 165,
+  LEFT_ALIGN+GREEN, "5. atmosphere/life support", 10, 185,
+  LEFT_ALIGN+GREEN, "6. water treatment/recycling", 10, 205,
+  0,NULL,0,0
+};
+
+page_item help_page_intt[] = {
+  CENTRE+YELLOW, "THE MARTIAN BASE", 0, 80,
+  CENTRE+GREEN, "", 0, 105,
+  CENTRE+GREEN, "", 0, 125,
+  CENTRE+GREEN, "", 0 ,145,
+  CENTRE+GREEN, "", 0, 165,
+  CENTRE+GREEN, "", 0, 185,
+  CENTRE+GREEN, "", 0, 205,
+  0,NULL,0,0
+};
+
+page_item help_page_ta2[] = {
+  CENTRE+YELLOW, "THANKS ALSO TO", 0, 80,
+  CENTRE+GREEN, "anyone who's been patiently", 0, 105,
+  CENTRE+GREEN, "waiting for marsquake.", 0, 125,
+  CENTRE+GREEN, "i hope it was worth", 0 ,145,
+  CENTRE+GREEN, "the wait!", 0, 165,
+  RIGHT_ALIGN+GREEN, "- paul", 310, 205,
+  0,NULL,0,0
+};
+
+page_item help_page_beta[] = {
+  CENTRE+YELLOW, "BETA TESTING", 0, 65,
+  CENTRE+GREEN, "ben carter", 0,  85,
+  CENTRE+GREEN, "chris egan", 0, 105,
+  CENTRE+GREEN, "micheal kay", 0, 125,
+  CENTRE+GREEN, "henry morgan", 0, 145,
+  CENTRE+GREEN, "steve mumford", 0, 165,
+  CENTRE+GREEN, "ewan panter", 0, 185,
+  CENTRE+GREEN, "martin tillman", 0 ,205,
+  0,NULL,0,0
+};
+
+page_item help_page_ta1[] = {
+  CENTRE+YELLOW, "THANKS TO", 0, 80,
+  CENTRE+GREEN, "the readers of", 0, 105,
+  CENTRE+YELLOW, "comp.sys.acorn.games", 0, 125,
+  CENTRE+GREEN, "and steve mumford of AU", 0 ,145,
+  CENTRE+GREEN, "for their help and", 0, 165,
+  CENTRE+GREEN, "suggestions.", 0, 185,
+  0,NULL,0,0
+};
+
+page_item help_page_nme1[] = {
+  CENTRE+YELLOW, "SECURITY DROIDS", 0, 80,
+  LEFT_ALIGN+ICON, (char*) 20, 50, 105,
+  RIGHT_ALIGN+ICON, (char*) 21, 270,105,
+  CENTRE+GREEN, "automated units which will", 0, 135,
+  CENTRE+GREEN, "dispose of any bombs they", 0, 155,
+  CENTRE+GREEN, "find. contact with red unit", 0, 175,
+  CENTRE+GREEN, "is deadly.", 0, 195,
+  0,NULL,0,0
+};
+
+page_item help_page_nme2[] = {
+  CENTRE+YELLOW, "SPRYTS", 0, 80,
+  CENTRE+ICON, (char*) 19, 50, 105,
+  CENTRE+GREEN, "floating clouds of energy", 0, 135,
+  CENTRE+GREEN, "that are deadly on contact.", 0, 155,
+  CENTRE+GREEN, "tend to follow set paths.", 0, 175,
+  0,NULL,0,0
+};
+
+page_item help_page_nme3[] = {
+  CENTRE+YELLOW, "SPIRIT", 0, 80,
+  CENTRE+ICON, (char*) 22, 50, 105,
+  CENTRE+GREEN, "able to pass through", 0, 135,
+  CENTRE+GREEN, "blockages. deadly on", 0, 155,
+  CENTRE+GREEN, "contact. follow random or", 0, 175,
+  CENTRE+GREEN, "player seeking routes.", 0, 195,
+  0,NULL,0,0
+};
+
+page_item help_page_nme4[] = {
+  CENTRE+YELLOW, "WANDERING BOMBS", 0, 80,
+  CENTRE+ICON, (char*) 23, 50, 105,
+  CENTRE+GREEN, "walking, ticking bombs that", 0, 135,
+  CENTRE+GREEN, "explode when near player.", 0, 155,
+  CENTRE+GREEN, "follow random or player", 0, 175,
+  CENTRE+GREEN, "seeking routes.", 0, 195,
+  0,NULL,0,0
+};
+
+page_item help_page_web[] = {
+  CENTRE+YELLOW, "MARSQUAKE WEB PAGE", 0, 80,
+  CENTRE+GREEN, "keep a look out for", 0, 105,
+  CENTRE+ICON, (char*) 18, 0, 135,
+  CENTRE+GREEN, "for future versions,", 0, 165,
+  CENTRE+GREEN, "bug fixes and info.", 0, 185,
+  0,NULL,0,0
+};
+
+page_item help_page_aut[] = {
+  CENTRE+YELLOW, "CONTACTING THE AUTHOR", 0, 80,
+  CENTRE+GREEN, "code, graphics and music by", 0, 105,
+  CENTRE+YELLOW, "PAUL TAYLOR", 0, 127,
+  CENTRE+GREEN, "please email me with any", 0 ,145,
+  CENTRE+GREEN, "comments and, dare i say it,", 0, 165,
+  CENTRE+GREEN, "bug reports at :", 0, 185,
+  CENTRE+ICON, (char *) 17, 0, 205,
+  0,NULL,0,0
+};
+
+page_item help_page_ser1[] = {
+  CENTRE+YELLOW, "MULTIPLAYER - SERIAL", 0, 80,
+  CENTRE+GREEN, "two machines can be linked", 0, 105,
+  CENTRE+GREEN, "together and you can split", 0, 125,
+  CENTRE+GREEN, "the players between them.", 0, 145,
+  CENTRE+GREEN, "follow these instructions", 0, 185,
+  CENTRE+GREEN, "to set up a linked game.", 0, 205,
+  0,NULL,0,0
+};
+
+page_item help_page_ser2[] = {
+  CENTRE+YELLOW, "MULTIPLAYER - SERIAL", 0, 80,
+  CENTRE+GREEN, "with the serial lead in", 0, 105,
+  CENTRE+GREEN, "place, move to the", 0, 125,
+  CENTRE+RED, "multiplayer main menu", 0, 145,
+  CENTRE+GREEN, "on each.", 0, 165,
+  0,NULL,0,0
+};
+
+page_item help_page_ser3[] = {
+  CENTRE+YELLOW, "MULTIPLAYER - SERIAL", 0, 80,
+  CENTRE+GREEN, "on one machine, choose the", 0, 105,
+  CENTRE+GREEN, "players that will play on", 0, 125,
+  CENTRE+GREEN, "that machine and mark them", 0, 145,
+  CENTRE+GREEN, "as active. mark the players", 0, 165,
+  CENTRE+GREEN, "on the other machine as remote.", 0, 185,
+  0,NULL,0,0
+};
+
+page_item help_page_ser4[] = {
+  CENTRE+YELLOW, "MULTIPLAYER - SERIAL", 0, 80,
+  CENTRE+GREEN, "select the establish link", 0, 105,
+  CENTRE+GREEN, "option to join the machines.", 0, 125,
+  CENTRE+GREEN, "a contact made message will", 0, 165,
+  CENTRE+GREEN, "inform you when this works.", 0, 185,
+  0,NULL,0,0
+};
+
+page_item help_page_ser5[] = {
+  CENTRE+YELLOW, "MULTIPLAYER - SERIAL", 0, 80,
+  CENTRE+GREEN, "players on each machine can", 0, 105,
+  CENTRE+GREEN, "set up their player details", 0, 125,
+  CENTRE+GREEN, "then each should select the", 0, 145,
+  CENTRE+GREEN, "start game option", 0, 165,
+  0,NULL,0,0
+};
+
+page_item help_page_ser6[] = {
+  CENTRE+YELLOW, "MULTIPLAYER - SERIAL", 0, 80,
+  CENTRE+GREEN, "the slave machine will then", 0, 105,
+  CENTRE+GREEN, "wait for the master to set", 0, 125,
+  CENTRE+GREEN, "the level details before", 0, 145,
+  CENTRE+GREEN, "the game starts.", 0, 165,
+  0,NULL,0,0
+};
+
+page_item help_page_ser7[] = {
+  CENTRE+YELLOW, "MULTIPLAYER - SERIAL", 0, 80,
+  CENTRE+GREEN, "the master machine will", 0, 105,
+  CENTRE+GREEN, "be able to choose the level", 0, 125,
+  CENTRE+GREEN, "and associated options just", 0, 145,
+  CENTRE+GREEN, "as in a normal multiplayer", 0, 165,
+  CENTRE+GREEN, "game.", 0, 185,
+  0,NULL,0,0
+};
+
+page_item help_page_ser8[] = {
+  CENTRE+YELLOW, "MULTIPLAYER - SERIAL", 0, 80,
+  CENTRE+GREEN, "see the game help file for", 0, 105,
+  CENTRE+GREEN, "more detailed instructions", 0, 125,
+  0,NULL,0,0
+};
+
+page_item help_page_c4[] = {
+  CENTRE+YELLOW, "CONTROLS - MOUSE", 0, 80,
+  CENTRE+GREEN, "right button is &1", 0, 105,
+  CENTRE+GREEN, "middle button is &2", 0, 125,
+  CENTRE+GREEN, "congratulations to anyone", 0, 165,
+  CENTRE+GREEN, "who can get the hang of", 0, 185,
+  CENTRE+GREEN, "this control method!", 0, 205,
+  0,NULL,0,0
+};
+
+page_item help_page_c3[] = {
+  CENTRE+YELLOW, "CONTROLS - MOUSE", 0, 80,
+  CENTRE+GREEN, "mouse control places a small", 0, 105,
+  CENTRE+GREEN, "green arrow indicating the", 0, 125,
+  CENTRE+GREEN, "direction to move the player.", 0 ,145,
+  CENTRE+GREEN, "move the mouse to change this", 0, 165,
+  CENTRE+GREEN, "direction, then press left", 0, 185,
+  CENTRE+GREEN, "to move in that direction.", 0, 205,
+  0,NULL,0,0
+};
+
+page_item help_page_c2[] = {
+  CENTRE+YELLOW, "CONTROLS - KEYS", 0, 80,
+  CENTRE+GREEN, "there are provisions for all", 0, 105,
+  CENTRE+GREEN, "four people playing together", 0, 125,
+  CENTRE+GREEN, "on keyboard, though this is", 0 ,145,
+  CENTRE+GREEN, "only recommended if you've", 0, 165,
+  CENTRE+GREEN, "lost your twister mat.", 0, 185,
+  0,NULL,0,0
+};
+
+page_item help_page_c1[] = {
+  CENTRE+YELLOW, "CONTROLS", 0, 80,
+  CENTRE+GREEN, "the keyboard controls are", 0, 105,
+  CENTRE+GREEN, "redefinable, and joysticks", 0, 125,
+  CENTRE+GREEN, "can be used as long as the", 0 ,145,
+  CENTRE+GREEN, "interface supports acorn's", 0, 165,
+  CENTRE+GREEN, "joystick swi", 0, 185,
+  0,NULL,0,0
+};
+
+page_item help_page_mp4[] = {
+  CENTRE+YELLOW, "MULTIPLAYER GAME", 0, 80,
+  CENTRE+GREEN, "the game will only start", 0, 105,
+  CENTRE+GREEN, "when you have at least two", 0, 125,
+  CENTRE+GREEN, "players taking part", 0 ,145,
+  0,NULL,0,0
+};
+
+page_item help_page_mp3[] = {
+  CENTRE+YELLOW, "MULTIPLAYER GAME", 0, 80,
+  CENTRE+GREEN, "player types can be marked as", 0, 105,
+  LEFT_ALIGN+RED, "off", 20, 125,
+  LEFT_ALIGN+RED, "active", 20 ,145,
+  LEFT_ALIGN+RED, "cpu", 20, 165,
+  LEFT_ALIGN+RED, "remote", 20, 185,
+  LEFT_ALIGN+GREEN, "- not playing", 90, 125,
+  LEFT_ALIGN+GREEN, "- player controlled", 90 ,145,
+  LEFT_ALIGN+GREEN, "- ai player", 90, 165,
+  LEFT_ALIGN+GREEN, "- serial linked player", 90, 185,
+  CENTRE+GREEN, "(see later for serial link)", 0, 205,
+  0,NULL,0,0
+};
+
+page_item help_page_mp2[] = {
+  CENTRE+YELLOW, "MULTIPLAYER GAME", 0, 80,
+  CENTRE+GREEN, "you can also set how many", 0, 105,
+  CENTRE+GREEN, "lives you each have at the", 0, 125,
+  CENTRE+GREEN, "start of the round, and how", 0 ,145,
+  CENTRE+GREEN, "many rounds must be won", 0, 165,
+  CENTRE+GREEN, "before a player is considered", 0, 185,
+  CENTRE+GREEN, "the winner", 0, 205,
+  0,NULL,0,0
+};
+
+page_item help_page_mp1[] = {
+  CENTRE+YELLOW, "MULTIPLAYER GAME", 0, 80,
+  CENTRE+GREEN, "a game for 2-4 players", 0, 105,
+  CENTRE+GREEN, "blow the er, living daylights", 0, 125,
+  CENTRE+GREEN, "out of the other players.", 0 ,145,
+  CENTRE+GREEN, "simple, innit..?", 0, 165,
+  CENTRE+GREEN, "well not quite...", 0, 200,
+  0,NULL,0,0
+};
+
+page_item help_page_b1[] = {
+  CENTRE+YELLOW, "EXTRA FLAME CELL", 0, 80,
+  CENTRE+ICON, (char *) 4, 0, 105,
+  CENTRE+GREEN, "increases explosion size", 0 ,145,
+  CENTRE+GREEN, "by one unit in each direction", 0, 165,
+  0,NULL,0,0
+};
+
+page_item help_page_b2[] = {
+  CENTRE+YELLOW, "EXTRA BOMB CELL", 0, 80,
+  CENTRE+ICON, (char *) 5, 0, 105,
+  CENTRE+GREEN, "increases the number of", 0 ,145,
+  CENTRE+GREEN, "bombs that can be dropped", 0, 165,
+  0,NULL,0,0
+};
+
+page_item help_page_b3[] = {
+  CENTRE+YELLOW, "MEGA BOMB CELL", 0, 80,
+  CENTRE+ICON, (char *) 6, 0, 105,
+  CENTRE+GREEN, "releases one super-", 0 ,145,
+  CENTRE+GREEN, "powerful bomb per recharge", 0, 165,
+  0,NULL,0,0
+};
+
+page_item help_page_b4[] = {
+  CENTRE+YELLOW, "FLOWER BOMB CELL", 0, 80,
+  CENTRE+ICON, (char *) 8, 0, 105,
+  CENTRE+GREEN, "explosion can spread around", 0 ,145,
+  CENTRE+GREEN, "corners in local area.", 0, 165,
+  0,NULL,0,0
+};
+
+page_item help_page_b5[] = {
+  CENTRE+YELLOW, "FLOWER BOMB CELL", 0, 80,
+  CENTRE+ICON, (char *) 8, 0, 105,
+  CENTRE+RED, "reports have been made of", 0 ,145,
+  CENTRE+RED, "martian sand causing these", 0, 165,
+  CENTRE+RED, "to fail occasionally", 0, 185,
+  0,NULL,0,0
+};
+
+page_item help_page_b6[] = {
+  CENTRE+YELLOW, "PUSH ABILITY", 0, 80,
+  CENTRE+ICON, (char *) 9, 0, 105,
+  CENTRE+GREEN, "adds the ability to roll the", 0 ,145,
+  CENTRE+GREEN, "bombs", 0, 165,
+  0,NULL,0,0
+};
+
+page_item help_page_b7[] = {
+  CENTRE+YELLOW, "PUSH ABILITY", 0, 80,
+  CENTRE+ICON, (char *) 9, 0, 105,
+  CENTRE+GREEN, "push the bomb by walking into", 0 ,145,
+  CENTRE+GREEN, "it, &2 stops it in its tracks.", 0, 165,
+  0,NULL,0,0
+};
+
+page_item help_page_b8[] = {
+  CENTRE+YELLOW, "THROW ABILITY", 0, 80,
+  CENTRE+ICON, (char *) 10, 0, 105,
+  CENTRE+GREEN, "adds the ability to project", 0 ,145,
+  CENTRE+GREEN, "the bomb over walls and", 0, 165,
+  CENTRE+GREEN, "blockages.", 0, 185,
+  0,NULL,0,0
+};
+
+page_item help_page_b9[] = {
+  CENTRE+YELLOW, "THROW ABILITY", 0, 80,
+  CENTRE+ICON, (char *) 10, 0, 105,
+  CENTRE+GREEN, "press &1 while over the", 0 ,145,
+  CENTRE+GREEN, "bomb to pick it up, then", 0, 165,
+  CENTRE+GREEN, "&1 again to throw it", 0, 185,
+  0,NULL,0,0
+};
+
+page_item help_page_b10[] = {
+  CENTRE+YELLOW, "SPRING BOMB CELLS", 0, 80,
+  CENTRE+ICON, (char *) 7, 0, 105,
+  CENTRE+GREEN, "causes pushed bombs to", 0 ,145,
+  CENTRE+GREEN, "rebound off walls or", 0, 165,
+  CENTRE+GREEN, "blockages", 0, 185,
+  0,NULL,0,0
+};
+
+page_item help_page_b11[] = {
+  CENTRE+YELLOW, "PLASMA PROTECTION SUIT", 0, 80,
+  CENTRE+ICON, (char *) 12, 0, 105,
+  CENTRE+GREEN, "will not, unfortunately,", 0 ,145,
+  CENTRE+GREEN, "protect you from explosions", 0, 165,
+  0,NULL,0,0
+};
+
+page_item help_page_b12[] = {
+  CENTRE+YELLOW, "PLASMA PROTECTION SUIT", 0, 80,
+  CENTRE+ICON, (char *) 12, 0, 105,
+  CENTRE+GREEN, "it will absorb any mobile", 0 ,145,
+  CENTRE+GREEN, "energy sources that you", 0, 165,
+  CENTRE+GREEN, "may find", 0, 185,
+  0,NULL,0,0
+};
+
+page_item help_page_b13[] = {
+  CENTRE+YELLOW, "MYSTERY CELLS", 0, 80,
+  CENTRE+ICON, (char *) 11, 0, 105,
+  CENTRE+GREEN, "impossible to identify their", 0 ,145,
+  CENTRE+GREEN, "purpose before use.", 0, 165,
+  CENTRE+GREEN, "\"suck it and see\"", 0, 185,
+  0,NULL,0,0
+};
+
+page_item help_page_int3[] = {
+  CENTRE+YELLOW, "YOUR MISSION", 0, 80,
+  CENTRE+GREEN, "four of these sections have been", 0, 105,
+  CENTRE+GREEN, "damaged by the recent", 0, 125,
+  CENTRE+GREEN, "rockfalls. it is your task to", 0 ,145,
+  CENTRE+GREEN, "enter the levels within these", 0, 165,
+  CENTRE+GREEN, "sections and remove the", 0, 185,
+  CENTRE+GREEN, "blockages.", 0, 205,
+  0,NULL,0,0
+};
+
+page_item help_page_int4[] = {
+  CENTRE+YELLOW, "YOUR MISSION", 0, 80,
+  CENTRE+GREEN, "you are also instructed to retire", 0, 105,
+  CENTRE+GREEN, "any mobile entities that may still", 0, 125,
+  CENTRE+GREEN, "be active. all levels must be", 0 ,145,
+  CENTRE+GREEN, "cleared before normal", 0, 165,
+  CENTRE+GREEN, "operations can restart", 0, 185,
+  0,NULL,0,0
+};
+
+page_item help_page_int5[] = {
+  CENTRE+YELLOW, "EQUIPMENT", 0, 80,
+  CENTRE+GREEN, "you are equipped with an", 0, 105,
+  CENTRE+GREEN, "explosive generating backpack,", 0, 125,
+  CENTRE+GREEN, "supplied with energy cells for", 0 ,145,
+  CENTRE+GREEN, "one low power bomb per power", 0, 165,
+  CENTRE+GREEN, "recharge.", 0, 185,
+  0,NULL,0,0
+};
+
+page_item help_page_int6[] = {
+  CENTRE+YELLOW, "EQUIPMENT", 0, 80,
+  CENTRE+GREEN, "larger explosions and more", 0, 105,
+  CENTRE+GREEN, "bombs can be gained by", 0, 125,
+  CENTRE+GREEN, "collecting the appropriately", 0 ,145,
+  CENTRE+GREEN, "marked extra cells that you may", 0, 165,
+  CENTRE+GREEN, "find. other utility cells are", 0, 185,
+  CENTRE+GREEN, "available.", 0, 205,
+  0,NULL,0,0
+};
+
+page_item help_page_mus[] = {
+  CENTRE+YELLOW,"audio provided by",0,80,
+  CENTRE+ICON, (char *) 14, 0,100,
+  CENTRE+RED,"from",0,154,
+  CENTRE+ICON, (char *) 13, 0,174,
+  0,NULL,0,0
+};
+
+page_item *help_page[] = {
+  &help_page_int1[0],
+  &help_page_int2[0],
+  &help_page_int3[0],
+  &help_page_int4[0],
+  &help_page_int5[0],
+  &help_page_int6[0],
+  &help_page_b1[0],
+  &help_page_b2[0],
+  &help_page_b3[0],
+  &help_page_b4[0],
+  &help_page_b5[0],
+  &help_page_b6[0],
+  &help_page_b7[0],
+  &help_page_b8[0],
+  &help_page_b9[0],
+  &help_page_b10[0],
+  &help_page_b11[0],
+  &help_page_b12[0],
+  &help_page_b13[0],
+  &help_page_nme1[0],
+  &help_page_nme2[0],
+  &help_page_nme3[0],
+  &help_page_nme4[0],
+  &help_page_mp1[0],
+  &help_page_mp2[0],
+  &help_page_mp3[0],
+  &help_page_mp4[0],
+  &help_page_c1[0],
+  &help_page_c2[0],
+  &help_page_c3[0],
+  &help_page_c4[0],
+  &help_page_ser1[0],
+  &help_page_ser2[0],
+  &help_page_ser3[0],
+  &help_page_ser4[0],
+  &help_page_ser5[0],
+  &help_page_ser6[0],
+  &help_page_ser7[0],
+  &help_page_ser8[0],
+  &help_page_aut[0],
+  &help_page_web[0],
+  &help_page_mus[0],
+  &help_page_ta1[0],
+  &help_page_beta[0],
+  &help_page_ta2[0],
+  NULL
+};
+
+void play_intro_sequence()
+{
+  int item;
+  int seq_pos;
+  int time_now;
+  int time_for_next;
+  int total_active;
+  int end_of_seq;
+  int mus;
+  _kernel_swi_regs r;
+
+  console();
+
+  /* Initialise active item list */
+  for (item=0; item<MAX_ACTIVE_ITEMS; item++) {
+    active_item[item].item_id = -1;
+  }
+
+  seq_pos = end_of_seq = total_active = 0;
+  mus = 0;
+  time_for_next = 0;
+
+  do {
+    /* Look at clock */
+    _kernel_swi(OS_ReadMonotonicTime,&r,&r);
+    time_now = r.r[0];
+
+    /* Time for new sequence item? */
+    if (time_now > time_for_next && !end_of_seq) {
+      /* Find empty slot in active array */
+      for (item=0;
+      	   item<MAX_ACTIVE_ITEMS && active_item[item].item_id>=0;
+      	   item++);
+
+      if (item<MAX_ACTIVE_ITEMS) {
+        /* Found a free slot... use it! */
+        active_item[item].item_id =
+            add_new_menu_item(intro_sequence[seq_pos].text,
+            		      intro_sequence[seq_pos].x,
+            		      intro_sequence[seq_pos].y,
+            		      intro_sequence[seq_pos].align_col);
+
+        active_item[item].end_time = time_now + intro_sequence[seq_pos].life;
+
+        if (intro_sequence[seq_pos].time_until_next >= 0) {
+          time_for_next = time_now + intro_sequence[seq_pos].time_until_next;
+        }
+        else {
+          end_of_seq = 1;
+        }
+
+	/* Displaying the title sprite triggers the music */
+	if ((intro_sequence[seq_pos].align_col & ICON) &&
+	    ((int)intro_sequence[seq_pos].text)==15) {
+	  /* Start music playing */
+  	  dsym_start_song_cold();
+  	  mus = 1;
+  	}
+
+        total_active++;
+        seq_pos++;
+      }
+    }
+
+    /* Expire any of the active items? */
+    for (item=0; item<MAX_ACTIVE_ITEMS; item++) {
+      if (active_item[item].item_id >= 0) {
+        if (active_item[item].end_time < time_now) {
+          /* Close item */
+          remove_menu_item(active_item[item].item_id);
+
+          MENU_SEL_SFX;
+
+          /* Mark as unallocated */
+          active_item[item].item_id = -1;
+          total_active--;
+        }
+      }
+    }
+
+    /* Update screen */
+    if (screenres == MODE_13)
+      draw_black_screen();
+    else
+      H_draw_black_screen();
+
+    maintain_menu();
+
+    swapscreen();
+
+    /* User wants to skip? */
+    read_menu_joy();
+    if (menu_joy_data & FIRE2) {
+      if (!mus) dsym_start_song_cold();
+      break;
+    }
+  } while (!(end_of_seq && total_active==0));
+
+  /* Expire all of the active items */
+  for (item=0; item<MAX_ACTIVE_ITEMS; item++) {
+    if (active_item[item].item_id >= 0) {
+      /* Close item */
+      remove_menu_item(active_item[item].item_id);
+
+      MENU_SEL_SFX;
+    }
+  }
+
+  /* Wait a while for existing items to close */
+  for (item=0; item<40; item++) {
+    if (screenres == MODE_13)
+      draw_black_screen();
+    else
+      H_draw_black_screen();
+    maintain_menu();
+    swapscreen();
+  }
+}
+
+#define NORMAL_READ    0
+#define WAIT_FOR_KEY   1
+#define END_OF_TEXT    2
+#define TEXT_FINISHED  3
+
+#define STD_DELAY      2
+
+void console(void)
+{
+  int  x,y, ox,oy;
+  PFILE *text;
+  char c,last_c;
+  int  timer, ctimer;
+  int  state;
+
+  /* Clear both screen banks */
+  for (c=0; c<2; c++) {
+    if (screenres == MODE_13)
+      draw_black_screen();
+    else
+      H_draw_black_screen();
+
+    swapscreen();
+  }
+
+  /* Attempt to open message file */
+  if ((text = pak_fopen("<Mars$Dir>.d.text","rb"))==NULL) {
+#ifndef NO_PRINTF
+    printf("Couldn't open message file... skipping.\n");
+#endif
+  }
+  else {
+    /* Read and display file */
+    scrmem = screenbank[ticker^3];
+
+    state = NORMAL_READ;
+
+    last_c = 32;
+
+    timer = 1;
+    ctimer = 0;
+
+    x = 2;
+    y = (screenres == MODE_49) ? 18:2;
+
+    do {
+      if (state == NORMAL_READ) {
+        if (timer) timer--;
+
+        if (timer==0) {
+          c = pak_fgetc(text);
+
+          if (ctimer) {
+            /* need to set last character */
+            if (last_c>=32 || last_c<=127) {
+              if (screenres == MODE_13)
+                draw_char(last_c,ox,oy,GREEN);
+              else
+                H_draw_char(last_c,ox,oy,GREEN);
+            }
+            ctimer = 0;
+          }
+
+          ox = x;
+          oy = y;
+          last_c = c;
+
+          switch (c) {
+            case 0xb2 : /* Pause */
+              timer = 25;
+              c = 0;
+              break;
+
+            case 0x84 : /* End */
+              state = END_OF_TEXT;
+              c = 0;
+              break;
+
+            case 0x8c : /* Wait for key */
+              state = WAIT_FOR_KEY;
+              timer = 1000;
+              c = 0;
+              break;
+
+            case 0xa9 : /* Clear screen */
+              if (screenres == MODE_13)
+                draw_black_screen();
+              else
+                H_draw_black_screen();
+              x = 2;
+              y = (screenres == MODE_49) ? 18:2;
+              timer = 25;
+              c = 0;
+              break;
+
+            case 0x0a : /* New line */
+              x = 2;
+              y += 20;
+              timer = STD_DELAY;
+              c = 0;
+              break;
+          }
+
+          if (c) {
+            /* Draw new char */
+            if (c>=32 || c<=127) {
+              /*if (c>='a' && c<='z') {
+                if (screenres == MODE_13)
+                  draw_char(c,x,y-2,YELLOW);
+                else
+                  H_draw_char(c,x,y-2,YELLOW);
+                oy -= 2;
+              }
+              else {*/
+                if (screenres == MODE_13)
+                  draw_char(c,x,y,YELLOW);
+                else
+                  H_draw_char(c,x,y,YELLOW);
+              /*}*/
+              if (c>32) CHAR_DISP_SFX;
+            }
+
+            x += font_wid[c-32]+1;
+            timer = ctimer = STD_DELAY;
+            last_c = c;
+          }
+        }
+      }
+
+      if (ctimer) {
+        ctimer--;
+
+        if (ctimer==0) {
+          /* set last character */
+          if (last_c>=32 || last_c<=127) {
+            if (screenres == MODE_13)
+              draw_char(last_c,ox,oy,GREEN);
+            else
+              H_draw_char(last_c,ox,oy,GREEN);
+          }
+        }
+      }
+
+      read_menu_joy();
+
+      if (state == WAIT_FOR_KEY) {
+        if (menu_joy_data & FIRE1) {
+          state = NORMAL_READ;
+          MENU_SEL_SFX;
+          if (timer>1) timer = 1;
+          if (ctimer>1) ctimer =1;
+        }
+        else {
+          if (timer) {
+            timer--;
+          }
+          else {
+            state = NORMAL_READ;
+          }
+        }
+      }
+      else {
+        if (state == END_OF_TEXT) {
+          if (menu_joy_data & FIRE1) {
+            state = TEXT_FINISHED;
+            MENU_SEL_SFX;
+          }
+        }
+      }
+
+      /* User wants to skip? */
+      if (menu_joy_data & FIRE2) break;
+
+      /* wait for vsync */
+      osbyte(19,0,0);
+    } while (state != TEXT_FINISHED);
+
+    pak_fclose(text);
+  }
+}
+
+void help_menu(void)
+{
+  /* Three options : last page, next page and quit.
+  ** These options will remain present at the bottom of the screen until
+  ** quit is selected. All other items will be pulled from the help page
+  ** storage bank.
+  */
+  int item, help_bit;
+  ubyte opt_id[3];
+  ubyte choice;
+  ubyte page;
+  ubyte next, last;
+
+  /* Initialise active item list */
+  for (item=0; item<MAX_ACTIVE_ITEMS; item++) {
+    active_item[item].item_id = -1;
+  }
+
+  /* Display page 0 first */
+  page = 0;
+  last = 0;
+  next = 1;
+
+  /* Display default options */
+  opt_id[0] = 255;    /* << */
+  opt_id[1] = add_new_menu_item(msg[76],0,230,CENTRE+CYAN);     /* return */
+  opt_id[2] = 255;    /* >> */
+
+  /* Highlight return option */
+  highlighted_item(opt_id[1]);
+  choice = 1;
+
+  /* Main help loop */
+  do {
+    /* Open page */
+    for (help_bit=0;help_page[page][help_bit].text != NULL; help_bit++) {
+      active_item[help_bit].item_id =
+        add_new_menu_item(help_page[page][help_bit].text,
+        		  help_page[page][help_bit].x,
+        		  help_page[page][help_bit].y,
+        		  help_page[page][help_bit].align_col);
+    }
+
+    /* Work out which directions we can go */
+    last = (page==0) ? 0:1;
+    next = (help_page[page+1]==NULL) ? 0:1;
+
+    /* Move highlighted option if necessary */
+    if (choice==0 && last==0) choice=1;
+    if (choice==2 && next==0) choice=1;
+
+    /* Remove options no longer required */
+    if (last==0 && opt_id[0]!=255) {
+      remove_menu_item(opt_id[0]);
+      opt_id[0] = 255;
+    }
+
+    if (next==0 && opt_id[2]!=255) {
+      remove_menu_item(opt_id[2]);
+      opt_id[2] = 255;
+    }
+
+    /* Display newly required options */
+    if (last && opt_id[0]==255) {
+      /* Display << option */
+      opt_id[0] = add_new_menu_item(msg[75],20,230,LEFT_ALIGN+CYAN);
+    }
+
+    if (next && opt_id[2]==255) {
+      /* Display >> option */
+      opt_id[2] = add_new_menu_item(msg[77],300,230,RIGHT_ALIGN+CYAN);
+    }
+
+    /* Display page and wait for further input */
+    do {
+      /* Update screen */
+      draw_menu_screen();
+
+      /* Highlight our choice */
+      highlighted_item(opt_id[choice]);
+
+      maintain_menu();
+
+      swapscreen();
+
+      /* User input? */
+      read_menu_joy();
+
+      if (menu_joy_data & LEFT) {
+        choice--;
+        if (choice==0 && last==0) choice=1;
+        if (choice==255) choice=0;
+        MENU_MOV_SFX;
+      }
+
+      if (menu_joy_data & RIGHT) {
+        choice++;
+        if (choice==2 && next==0) choice=1;
+        if (choice>2) choice=2;
+        MENU_MOV_SFX;
+      }
+    } while (!(menu_joy_data & FIRE1));
+
+    /* Select has been pressed */
+    MENU_SEL_SFX;
+
+    /* Lose current help page */
+    for (item=0; item<help_bit; item++) {
+      remove_menu_item(active_item[item].item_id);
+    }
+
+    /* What'll we do? */
+    if (choice == 0) {
+      /* Go to previous page */
+      if (page>0) page--;
+    }
+    else {
+      if (choice == 2) {
+        /* Go to next page */
+        if (help_page[page+1] != NULL) page++;
+      }
+    }
+  } while (choice != 1); /* return */
+
+  close_menu();
+}

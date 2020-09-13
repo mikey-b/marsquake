@@ -1,0 +1,28 @@
+/* H FILE */
+
+typedef struct PAKFILE {
+  char *name;
+  int offset;
+  int len;
+} PAKFILE;
+
+typedef struct PFILE {
+  FILE *norm_fp;
+  BOOL used;
+  BOOL packed;
+  int  fp;
+  int  fileoffset;
+  int  len;
+} PFILE;
+
+void init_pakfs(char *fname);
+void shutdown_pakfs(void);
+PFILE *pak_fopen(char *fname, char *com);
+char pak_fgetc(PFILE *p);
+int  pak_getw(PFILE *p);
+void pak_fclose(PFILE *p);
+void pak_fseek(PFILE *p, int pos, int off);
+int  pak_ftell(PFILE *p);
+BOOL pak_feof(PFILE *p);
+
+
